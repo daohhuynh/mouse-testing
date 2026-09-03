@@ -12,13 +12,16 @@
 set -eu
 
 cd "$(dirname "$0")/.."
-APP="target/mouse-testing.app"
+# A human name, because this ends up in /Applications, in Launchpad, in
+# Spotlight and in the Input Monitoring list, and "mouse-testing" reads like a
+# build artifact in all four.
+APP="target/Mouse Testing.app"
 ID="dev.mousetesting.suite"
 
 cargo build --release
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -27,13 +30,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleExecutable</key><string>mouse-testing</string>
   <key>CFBundleIdentifier</key><string>$ID</string>
-  <key>CFBundleName</key><string>mouse testing suite</string>
-  <key>CFBundleDisplayName</key><string>mouse testing suite</string>
+  <key>CFBundleName</key><string>Mouse Testing</string>
+  <key>CFBundleDisplayName</key><string>Mouse Testing</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <!-- Shown in the Input Monitoring prompt. -->
   <key>NSInputMonitoringUsageDescription</key>
   <string>Reads mouse reports so it can measure report rate, click timing and sensor behaviour. Nothing is transmitted anywhere.</string>
@@ -43,15 +47,29 @@ PLIST
 
 cp target/release/mouse-testing "$APP/Contents/MacOS/mouse-testing"
 
-# Ad-hoc signature with a stable identifier. Not a Developer ID signature, so
-# macOS still identifies the app partly by its code hash: rebuilding changes
-# that hash and can make you re-grant Input Monitoring. That is a property of
-# unsigned software, not a bug here.
+# The icon is committed, so a normal build never regenerates it. Run
+# scripts/make-icon.sh only when changing the mark itself.
+if [ -f assets/AppIcon.icns ]; then
+  cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+else
+  echo "note: assets/AppIcon.icns is missing, so the app will show the generic icon"
+  echo "      run scripts/make-icon.sh to build it"
+fi
+
+# Ad-hoc signature with a stable identifier. For an ad-hoc signature the
+# designated requirement is ONLY the code hash: not the bundle identifier, not
+# the path, not a certificate. So the Input Monitoring grant follows the app
+# wherever it is moved, and survives a rebuild that did not change the code,
+# because both the compile and the signing are deterministic (measured: an
+# unchanged rebuild reproduces the binary hash exactly). A real code change does
+# invalidate it. Repair with:
+#     tccutil reset ListenEvent dev.mousetesting.suite
 codesign --force --sign - --identifier "$ID" "$APP" >/dev/null 2>&1 \
   || echo "note: codesign failed; the bundle still runs but the permission grant will be less stable"
 
 echo "built $APP"
 echo
-echo "run it with:   open $APP"
+echo "run it with:          open \"$APP\""
+echo "install it with:      sh scripts/install.sh"
 echo "(use 'open', not the binary directly, so macOS treats it as its own app"
 echo " for permission purposes rather than attributing it to your terminal)"

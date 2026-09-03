@@ -110,14 +110,57 @@ cargo build --release
 ### macOS (Apple Silicon)
 
 ```
-./scripts/make-app-bundle.sh
-open target/mouse-testing.app
+sh scripts/install.sh
+```
+
+That builds the app, puts `Mouse Testing.app` into `/Applications`, and prints
+what to do about permissions. It launches from Launchpad, Spotlight or the
+Finder like anything else.
+
+No `sudo`: `/Applications` is group-writable by `admin` and has no sticky bit,
+so an ordinary copy is enough. Installing with `sudo` would leave a root-owned
+bundle and force every future reinstall to need `sudo` as well.
+
+No Gatekeeper prompt either. Quarantine is attached by whatever *downloaded* a
+file, and nothing downloaded this one; a locally built binary carries only
+`com.apple.provenance`, which Gatekeeper does not act on. (`spctl -a` still
+reports `rejected` for an ad-hoc signature, but enforcement is gated on the
+quarantine bit, which is absent.) If you ever zip the app and send it to another
+Mac, that copy will be quarantined, and the fix there is
+`xattr -dr com.apple.quarantine "/Applications/Mouse Testing.app"`.
+
+To build without installing:
+
+```
+sh scripts/make-app-bundle.sh
+open "target/Mouse Testing.app"
 ```
 
 Use the bundle rather than `cargo run`. macOS attaches permission grants to the
 "responsible process", which for a binary started from a terminal is the
 terminal or editor, not the binary; the bundle launched with `open` is its own
 responsible process and gets its own entry in System Settings.
+
+### The icon
+
+`scripts/icon_art.rs` **is** the icon: a list of drawing operations, rendered by
+`scripts/icon.rs`, which is a standalone `rustc` file with no dependencies and
+no place in the crate. `sh scripts/make-icon.sh` regenerates
+`assets/AppIcon.icns` from it. The `.icns` is committed, so building and
+installing never run that step; you only need it to change the mark.
+
+The mark is a filled mouse showing only its wheel. Filled because a stroke is
+the first thing downscaling destroys and this has to survive 16 pixels in a
+Finder list; only the wheel, because drawing the button split as well put a
+second mark directly above it, and below about 64 pixels the gap between them
+closes and the pair reads as one long slot. The tile is rimmed in grey because a
+flat black tile has no edge at all on a dark desktop, and because the app's own
+interface draws exactly that rule around every group.
+
+The tile matches Apple's own icon silhouette rather than approximating it.
+Measured against six system icons, the shape is 80.5% of the canvas on a
+0.0977 margin, and a superellipse exponent of 5.5 tracks their outline to within
+1.3 pixels RMS at 256 across.
 
 ### Windows 10/11
 
@@ -148,16 +191,29 @@ app detects this and says so with the exact error; it never reports zero.
 To grant it:
 
 1. **System Settings > Privacy & Security > Input Monitoring**
-2. Switch on **mouse testing suite** (use **+** and pick
-   `target/mouse-testing.app` if it is not listed)
+2. Switch on **Mouse Testing** (use **+** and pick
+   `/Applications/Mouse Testing.app` if it is not listed)
 3. **Quit and reopen the app.** macOS does not apply the grant to an
    already-running process.
 
 The app has a button that opens that pane directly.
 
-Because the bundle is ad-hoc signed rather than Developer ID signed, macOS
-partly identifies it by its code hash, so rebuilding can require re-granting.
-That is a property of unsigned software, not a defect in the app.
+For an ad-hoc signed app the designated code requirement is *only* the code
+hash: not the bundle identifier, not the path, not a certificate. Two things
+follow, and both were measured rather than assumed.
+
+The grant **follows the app** when you move it, because a code hash does not
+depend on where the file lives. But macOS registers every copy under the same
+bundle identifier, so leaving a second copy under `target/` makes the Settings
+row ambiguous about which one it is describing.
+
+Rebuilding **does not** cost you the grant unless the code actually changed.
+Both the compile and the ad-hoc signing are deterministic: an unchanged rebuild
+reproduced the same binary hash and the same bundle `CDHash` here, so the stored
+requirement still matches. A real code change does invalidate it, and the repair
+is `tccutil reset ListenEvent dev.mousetesting.suite` followed by re-granting.
+(Changing the toolchain version or moving the project directory also changes the
+hash, because debug info embeds absolute paths.)
 
 ### Windows: none
 
