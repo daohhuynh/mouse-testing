@@ -1,4 +1,6 @@
+pub mod abstats;
 pub mod clock;
+pub mod cps;
 pub mod debounce;
 pub mod hid_descriptor;
 pub mod polling;

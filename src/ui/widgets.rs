@@ -120,11 +120,13 @@ fn wrapped(ui: &mut egui::Ui, text: &str, width: f32, color: egui::Color32) {
 /// `[PASS] text`. The bracketed tag keeps the state readable without relying on
 /// colour alone.
 pub fn status_line(ui: &mut egui::Ui, level: Level, text: &str) {
+    let avail = ui.available_width();
+    let tag_w = mono_width(ui, 7);
     ui.horizontal(|ui| {
         ui.add(egui::Label::new(
             RichText::new(format!("[{}]", level.tag())).color(level.color()),
         ));
-        ui.add(egui::Label::new(RichText::new(text).color(theme::WHITE)).extend());
+        wrapped(ui, text, (avail - tag_w - 8.0).max(120.0), theme::WHITE);
     });
 }
 

@@ -230,5 +230,44 @@ pub fn capture_report(app: &crate::app::App) -> String {
     if !r.note.is_empty() {
         let _ = writeln!(o, "  note           {}", r.note);
     }
+
+    let _ = writeln!(
+        o,
+        "  system split   {} of {} events were bound for another application",
+        s.system_elsewhere, s.system.total
+    );
+
+    let _ = writeln!(o, "\n== buttons ==");
+    let _ = writeln!(
+        o,
+        "  edges          {} from {:?}",
+        s.buttons.len(),
+        s.button_source
+    );
+    let cfg = crate::core::debounce::DebounceConfig::default();
+    for b in crate::core::debounce::analyze_all(&s.buttons, &cfg) {
+        let _ = writeln!(
+            o,
+            "  button {:<3} {:?}  presses {} releases {} unmatched {}+{} doublets {} \
+             gaps<15ms {} min gap {:.1} ms median gap {:.1} ms min press {:.1} ms \
+             median press {:.1} ms spam {}",
+            b.button,
+            b.verdict,
+            b.n_down,
+            b.n_up,
+            b.unmatched_down,
+            b.unmatched_up,
+            b.n_doublets,
+            b.n_bounce_fail,
+            b.min_gap_ms,
+            b.median_gap_ms,
+            b.min_dwell_ms,
+            b.median_dwell_ms,
+            b.spam_clicking
+        );
+        if !b.note.is_empty() {
+            let _ = writeln!(o, "                 {}", b.note);
+        }
+    }
     o
 }

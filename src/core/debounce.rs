@@ -61,6 +61,8 @@ impl Default for DebounceConfig {
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Timestamps are kept so a press can be located in the session log.
+#[allow(dead_code)]
 pub struct Press {
     pub down_ns: u64,
     pub up_ns: Option<u64>,

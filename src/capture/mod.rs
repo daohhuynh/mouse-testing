@@ -6,6 +6,7 @@
 //! displayed but cannot change what was measured.
 
 use crate::core::clock;
+use crate::core::debounce::ButtonEvent;
 use crate::core::polling::{self, PollConfig, PollResult};
 use crate::core::ring::Consumer;
 use crate::core::sample::{Flags, Kind, Sample};
@@ -96,6 +97,16 @@ pub struct Session {
     /// Reports whose fields the descriptor parser could decode.
     pub decoded: u64,
     pub undecoded: u64,
+    /// Button edges, in time order, from whichever level is supplying them.
+    pub buttons: Vec<ButtonEvent>,
+    /// Which level the button edges came from, so the interface can say.
+    pub button_source: Option<Tier>,
+    /// Last known absolute button state per device, for turning the state a HID
+    /// report carries into the press and release edges the analysis needs.
+    button_state: std::collections::BTreeMap<u64, u32>,
+    /// Of the system level events, how many were bound for another
+    /// application rather than this one.
+    pub system_elsewhere: u64,
     /// The OS's own count of system-wide motion events over this run. It needs
     /// no permission, so it is the control that distinguishes "nothing moved"
     /// from "this level is not working".
@@ -159,6 +170,10 @@ impl Default for Session {
             system_note: String::new(),
             decoded: 0,
             undecoded: 0,
+            system_elsewhere: 0,
+            buttons: Vec::new(),
+            button_source: None,
+            button_state: std::collections::BTreeMap::new(),
             control_motion: 0,
             control_origin: None,
             #[cfg(target_os = "macos")]
@@ -205,6 +220,9 @@ impl Session {
         self.undecoded = 0;
         self.control_motion = 0;
         self.control_origin = None;
+        self.buttons.clear();
+        self.button_source = None;
+        self.button_state.clear();
 
         match device_key {
             Some(k) => {
@@ -319,8 +337,12 @@ impl Session {
         clock::ticks_to_ns(ticks.saturating_sub(origin))
     }
 
-    /// Drains everything captured since the last call. Cheap: a memcpy of plain
-    /// data plus an append.
+    /// Drains everything captured since the last call. Cheap: a memcpy of
+    /// plain data plus an append.
+    ///
+    /// Each backend's ring is drained into a locally owned buffer rather than
+    /// while holding a borrow of the backend, so the per-sample work is free to
+    /// touch the rest of the session.
     pub fn pump(&mut self) {
         self.pump_control();
 
@@ -328,109 +350,188 @@ impl Session {
         self.pump_windows();
 
         #[cfg(target_os = "macos")]
-        {
-            if let (Some(hid), Some(c)) = (self.hid.as_ref(), self.hid_consumer.as_mut()) {
-                self.scratch.clear();
-                let drops = hid.ring.drain(c, &mut self.scratch);
-                self.device.ring_drops += drops;
-                self.decoded = hid.decoded();
-                self.undecoded = hid.undecoded();
-                let st = hid.status();
-                if st.opened == 0 {
+        self.pump_macos();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn pump_macos(&mut self) {
+        if let Some(mut consumer) = self.hid_consumer.take() {
+            if let Some((ring, decoded, undecoded, status)) = self
+                .hid
+                .as_ref()
+                .map(|h| (h.ring.clone(), h.decoded(), h.undecoded(), h.status()))
+            {
+                self.decoded = decoded;
+                self.undecoded = undecoded;
+                if status.opened == 0 {
                     self.device_state = LevelState::Blocked;
-                    self.device_note = st
+                    self.device_note = status
                         .refused
                         .first()
                         .map(|(n, why)| format!("{n}: {why}"))
                         .unwrap_or_else(|| "No matching device could be opened.".into());
                 }
-                let taken = std::mem::take(&mut self.scratch);
-                for s in &taken {
+
+                let mut buf = std::mem::take(&mut self.scratch);
+                buf.clear();
+                self.device.ring_drops += ring.drain(&mut consumer, &mut buf);
+                for s in &buf {
                     if s.kind != Kind::Report {
                         continue;
                     }
                     let t = self.to_ns(s.t);
                     self.device.times_ns.push(t);
-                    self.device.counts.push(
-                        if s.has(Flags::DECODED) {
-                            s.dx.unsigned_abs().saturating_add(s.dy.unsigned_abs()) as i32
-                        } else {
-                            // Unknown rather than zero: a zero would be read as
-                            // "not moving" and would suppress the whole analysis.
-                            -1
-                        },
-                    );
+                    self.device.counts.push(if s.has(Flags::DECODED) {
+                        s.dx.unsigned_abs().saturating_add(s.dy.unsigned_abs()) as i32
+                    } else {
+                        // Unknown, not zero: a zero would read as "not moving"
+                        // and would suppress the whole analysis.
+                        -1
+                    });
                     self.device.total += 1;
+                    if s.has(Flags::DECODED) {
+                        self.push_button_edges(s.device, s.buttons_state, t, Tier::Device);
+                    }
                 }
-                self.scratch = taken;
+                self.scratch = buf;
                 if self.device.total > 0 && self.device_state == LevelState::Waiting {
                     self.device_state = LevelState::Live;
                 }
             }
+            self.hid_consumer = Some(consumer);
+        }
 
-            if let (Some(sys), Some(c)) = (self.sys.as_ref(), self.sys_consumer.as_mut()) {
-                self.scratch.clear();
-                let drops = sys.ring.drain(c, &mut self.scratch);
-                self.system.ring_drops += drops;
-                let taken = std::mem::take(&mut self.scratch);
-                for s in &taken {
+        if let Some(mut consumer) = self.sys_consumer.take() {
+            if let Some((ring, elsewhere)) = self.sys.as_ref().map(|s| {
+                (
+                    s.ring.clone(),
+                    s.elsewhere.load(std::sync::atomic::Ordering::Relaxed),
+                )
+            }) {
+                self.system_elsewhere = elsewhere;
+                let mut buf = std::mem::take(&mut self.scratch);
+                buf.clear();
+                self.system.ring_drops += ring.drain(&mut consumer, &mut buf);
+                for s in &buf {
                     let t = self.to_ns(s.t);
                     self.system.times_ns.push(t);
                     self.system
                         .counts
                         .push(s.dx.unsigned_abs().saturating_add(s.dy.unsigned_abs()) as i32);
                     self.system.total += 1;
+                    if self.button_source != Some(Tier::Device) {
+                        self.push_button_transitions(s.buttons_down, s.buttons_up, t, Tier::System);
+                    }
                 }
-                self.scratch = taken;
+                self.scratch = buf;
                 if self.system.total > 0 && self.system_state == LevelState::Waiting {
                     self.system_state = LevelState::Live;
                 }
             }
+            self.sys_consumer = Some(consumer);
         }
     }
 
+
     #[cfg(windows)]
     fn pump_windows(&mut self) {
-        if let (Some(raw), Some(c)) = (self.raw.as_ref(), self.raw_consumer.as_mut()) {
-            self.scratch.clear();
-            self.device.ring_drops += raw.ring.drain(c, &mut self.scratch);
-            let taken = std::mem::take(&mut self.scratch);
-            for s in &taken {
-                // Raw input delivers every mouse, so keep only the selected one.
-                if let Some(want) = self.filter_device {
-                    if s.device != want {
-                        continue;
+        if let Some(mut consumer) = self.raw_consumer.take() {
+            if let Some(ring) = self.raw.as_ref().map(|r| r.ring.clone()) {
+                let mut buf = std::mem::take(&mut self.scratch);
+                buf.clear();
+                self.device.ring_drops += ring.drain(&mut consumer, &mut buf);
+                for s in &buf {
+                    // Raw input delivers every mouse in one stream, so keep
+                    // only the device under test.
+                    if let Some(want) = self.filter_device {
+                        if s.device != want {
+                            continue;
+                        }
                     }
+                    let t = self.to_ns(s.t);
+                    self.device.times_ns.push(t);
+                    self.device
+                        .counts
+                        .push(s.dx.unsigned_abs().saturating_add(s.dy.unsigned_abs()) as i32);
+                    self.device.total += 1;
+                    self.push_button_transitions(s.buttons_down, s.buttons_up, t, Tier::Device);
                 }
-                let t = self.to_ns(s.t);
-                self.device.times_ns.push(t);
-                self.device
-                    .counts
-                    .push(s.dx.unsigned_abs().saturating_add(s.dy.unsigned_abs()) as i32);
-                self.device.total += 1;
+                self.scratch = buf;
+                if self.device.total > 0 && self.device_state == LevelState::Waiting {
+                    self.device_state = LevelState::Live;
+                }
             }
-            self.scratch = taken;
-            if self.device.total > 0 && self.device_state == LevelState::Waiting {
-                self.device_state = LevelState::Live;
-            }
+            self.raw_consumer = Some(consumer);
         }
 
-        if let (Some(hook), Some(c)) = (self.hook.as_ref(), self.hook_consumer.as_mut()) {
-            self.scratch.clear();
-            self.system.ring_drops += hook.ring.drain(c, &mut self.scratch);
-            let taken = std::mem::take(&mut self.scratch);
-            for s in &taken {
-                let t = self.to_ns(s.t);
-                self.system.times_ns.push(t);
-                // The hook reports a cursor position, not a delta, so motion
-                // magnitude is not available at this level.
-                self.system.counts.push(0);
-                self.system.total += 1;
+        if let Some(mut consumer) = self.hook_consumer.take() {
+            if let Some(ring) = self.hook.as_ref().map(|h| h.ring.clone()) {
+                let mut buf = std::mem::take(&mut self.scratch);
+                buf.clear();
+                self.system.ring_drops += ring.drain(&mut consumer, &mut buf);
+                for s in &buf {
+                    let t = self.to_ns(s.t);
+                    self.system.times_ns.push(t);
+                    // The hook reports a cursor position, not a delta, so
+                    // motion magnitude is not available at this level.
+                    self.system.counts.push(0);
+                    self.system.total += 1;
+                    if self.button_source != Some(Tier::Device) {
+                        self.push_button_transitions(s.buttons_down, s.buttons_up, t, Tier::System);
+                    }
+                }
+                self.scratch = buf;
+                if self.system.total > 0 && self.system_state == LevelState::Waiting {
+                    self.system_state = LevelState::Live;
+                }
             }
-            self.scratch = taken;
-            if self.system.total > 0 && self.system_state == LevelState::Waiting {
-                self.system_state = LevelState::Live;
+            self.hook_consumer = Some(consumer);
+        }
+    }
+
+
+    /// Turns an absolute button state into press and release edges.
+    fn push_button_edges(&mut self, device: u64, state: u32, t_ns: u64, source: Tier) {
+        let prev = *self.button_state.get(&device).unwrap_or(&0);
+        if prev == state {
+            return;
+        }
+        let changed = prev ^ state;
+        for bit in 0..32u32 {
+            if changed & (1 << bit) == 0 {
+                continue;
             }
+            self.buttons.push(ButtonEvent {
+                t_ns,
+                // Reported as the raw HID button usage, which is one-based, so
+                // an unmapped button shows up as itself rather than as a gap.
+                button: (bit + 1) as u8,
+                down: state & (1 << bit) != 0,
+            });
+        }
+        self.button_state.insert(device, state);
+        // The device level takes precedence once it produces anything, so the
+        // two sources can never be interleaved into one series.
+        if self.button_source != Some(Tier::Device) {
+            self.button_source = Some(source);
+        }
+    }
+
+    /// Records edges from a source that reports transitions rather than state.
+    fn push_button_transitions(&mut self, down: u32, up: u32, t_ns: u64, source: Tier) {
+        if down == 0 && up == 0 {
+            return;
+        }
+        for bit in 0..32u32 {
+            if down & (1 << bit) != 0 {
+                self.buttons.push(ButtonEvent { t_ns, button: (bit + 1) as u8, down: true });
+            }
+            if up & (1 << bit) != 0 {
+                self.buttons.push(ButtonEvent { t_ns, button: (bit + 1) as u8, down: false });
+            }
+        }
+        if self.button_source.is_none() {
+            self.button_source = Some(source);
         }
     }
 

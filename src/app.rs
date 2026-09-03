@@ -1,4 +1,5 @@
 use crate::capture::Session;
+use crate::core::cps;
 use crate::core::polling::{PollConfig, PollResult};
 use crate::platform::{self, AccessReport, DeviceInfo, HostEnv};
 use crate::ui::{sections, theme, widgets};
@@ -8,15 +9,24 @@ use std::time::Instant;
 pub enum Section {
     Device,
     Polling,
+    Clicks,
+    Cps,
 }
 
 impl Section {
-    pub const ALL: [Section; 2] = [Section::Device, Section::Polling];
+    pub const ALL: [Section; 4] = [
+        Section::Device,
+        Section::Polling,
+        Section::Clicks,
+        Section::Cps,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             Section::Device => "DEVICE",
             Section::Polling => "POLLING",
+            Section::Clicks => "CLICKS",
+            Section::Cps => "CPS",
         }
     }
 }
@@ -58,6 +68,53 @@ pub struct App {
     /// report and exit. Used to check the capture path against real hardware
     /// without needing anyone to drive the interface.
     pub auto_capture: Option<AutoCapture>,
+    pub cps: CpsState,
+}
+
+/// State of the clicks-per-second test.
+pub struct CpsState {
+    pub mode: usize,
+    pub duration_s: f64,
+    /// None counts every button.
+    pub button: Option<u8>,
+    pub running: bool,
+    started: Option<Instant>,
+    countdown: Option<(Instant, f64)>,
+    /// Index into the session's button series when the run began, so a run
+    /// counts only its own clicks.
+    baseline: usize,
+    pub history: Vec<cps::Run>,
+}
+
+impl Default for CpsState {
+    fn default() -> Self {
+        CpsState {
+            mode: 0,
+            duration_s: 10.0,
+            button: None,
+            running: false,
+            started: None,
+            countdown: None,
+            baseline: 0,
+            history: Vec::new(),
+        }
+    }
+}
+
+impl CpsState {
+    pub fn elapsed_s(&self) -> f64 {
+        self.started.map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0)
+    }
+
+    pub fn countdown_remaining(&self) -> Option<f64> {
+        let (start, total) = self.countdown?;
+        let left = total - start.elapsed().as_secs_f64();
+        if left > 0.0 {
+            Some(left)
+        } else {
+            None
+        }
+    }
 }
 
 pub struct AutoCapture {
@@ -89,7 +146,73 @@ impl App {
             countdown: None,
             last_analysis: None,
             auto_capture: None,
+            cps: CpsState::default(),
         }
+    }
+
+    /// Press timestamps belonging to the run in progress.
+    pub fn cps_presses(&self) -> Vec<u64> {
+        let want = self.cps.button;
+        self.session
+            .buttons
+            .iter()
+            .skip(self.cps.baseline)
+            .filter(|e| e.down && want.map(|b| b == e.button).unwrap_or(true))
+            .map(|e| e.t_ns)
+            .collect()
+    }
+
+    pub fn cps_start(&mut self, delay_s: f64) {
+        // A clicks-per-second run needs button events, so the capture has to be
+        // live for it to count anything.
+        if !self.session.running() {
+            self.start_capture(0.0);
+        }
+        if delay_s > 0.0 {
+            self.cps.countdown = Some((Instant::now(), delay_s));
+        } else {
+            self.begin_cps_run();
+        }
+    }
+
+    fn begin_cps_run(&mut self) {
+        self.cps.countdown = None;
+        self.cps.baseline = self.session.buttons.len();
+        self.cps.started = Some(Instant::now());
+        self.cps.running = true;
+    }
+
+    pub fn cps_abort(&mut self) {
+        self.cps.running = false;
+        self.cps.started = None;
+        self.cps.countdown = None;
+    }
+
+    fn tick_cps(&mut self) {
+        if let Some((start, total)) = self.cps.countdown {
+            if start.elapsed().as_secs_f64() >= total {
+                self.begin_cps_run();
+            }
+        }
+        if !self.cps.running {
+            return;
+        }
+        if self.cps.elapsed_s() < self.cps.duration_s {
+            return;
+        }
+        let presses = self.cps_presses();
+        let duration_ns = (self.cps.duration_s * 1e9) as u64;
+        let (sustained, peak) = cps::rates(&presses, duration_ns, 1_000_000_000);
+        self.cps.history.push(cps::Run {
+            mode: sections::cps::MODES[self.cps.mode].to_string(),
+            button: self.cps.button.unwrap_or(0),
+            duration_s: self.cps.duration_s,
+            presses: presses.len(),
+            sustained_cps: sustained,
+            peak_cps: peak,
+        });
+        self.cps.running = false;
+        self.cps.started = None;
     }
 
     /// Selects a section by name, for the command line.
@@ -169,6 +292,7 @@ impl App {
 
         self.session.pump();
         self.session.pump_app(ctx);
+        self.tick_cps();
 
         // Re-analysing a long capture every frame would make the interface
         // the slowest thing in the program, so it runs a few times a second.
@@ -243,7 +367,7 @@ impl eframe::App for App {
         // application's and misattribute the difference to the mouse.
         if self.session.running() {
             ctx.request_repaint();
-        } else if self.countdown.is_some() {
+        } else if self.countdown.is_some() || self.cps.countdown.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
     }
@@ -302,6 +426,8 @@ impl eframe::App for App {
                     .show(ui, |ui| match self.section {
                         Section::Device => sections::device::show(self, ui),
                         Section::Polling => sections::polling::show(self, ui),
+                        Section::Clicks => sections::clicks::show(self, ui),
+                        Section::Cps => sections::cps::show(self, ui),
                     });
             });
     }

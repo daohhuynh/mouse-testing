@@ -11,6 +11,7 @@ mod dump;
 mod platform;
 mod screenshot;
 mod selftest;
+mod statscheck;
 mod ui;
 
 fn main() -> eframe::Result {
@@ -33,6 +34,15 @@ fn main() -> eframe::Result {
                 "Not granted yet. Open System Settings > Privacy & Security > Input \
                  Monitoring, switch on \"mouse testing suite\", then launch it again."
             );
+        }
+        return Ok(());
+    }
+    if let Some(i) = args.iter().position(|a| a == "--stats-check") {
+        let (a, b) = (args.get(i + 1).cloned(), args.get(i + 2).cloned());
+        if let (Some(a), Some(b)) = (a, b) {
+            statscheck::run(&a, &b);
+        } else {
+            eprintln!("usage: --stats-check <cases.json> <out.json>");
         }
         return Ok(());
     }
