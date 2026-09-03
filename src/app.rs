@@ -1,6 +1,7 @@
 use crate::capture::Session;
 use crate::core::ab;
 use crate::core::cps;
+use crate::core::sensor;
 use crate::core::polling::{PollConfig, PollResult};
 use crate::platform::{self, AccessReport, DeviceInfo, HostEnv};
 use crate::ui::{sections, theme, widgets};
@@ -13,15 +14,17 @@ pub enum Section {
     Clicks,
     Cps,
     Ab,
+    Sensor,
 }
 
 impl Section {
-    pub const ALL: [Section; 5] = [
+    pub const ALL: [Section; 6] = [
         Section::Device,
         Section::Polling,
         Section::Clicks,
         Section::Cps,
         Section::Ab,
+        Section::Sensor,
     ];
 
     pub fn title(self) -> &'static str {
@@ -31,6 +34,7 @@ impl Section {
             Section::Clicks => "CLICKS",
             Section::Cps => "CPS",
             Section::Ab => "A/B",
+            Section::Sensor => "SENSOR",
         }
     }
 }
@@ -74,6 +78,84 @@ pub struct App {
     pub auto_capture: Option<AutoCapture>,
     pub cps: CpsState,
     pub ab: AbState,
+    pub sensor: SensorState,
+}
+
+/// Phase of one sensor test.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SensorPhase {
+    Idle,
+    /// Counting down so the mouse under test can be picked up. Every sensor
+    /// test needs both hands on the mouse being measured, which cannot also be
+    /// the thing that pressed the button.
+    Countdown,
+    Recording,
+}
+
+pub struct SensorState {
+    pub test: sensor::protocol::Test,
+    pub phase: SensorPhase,
+    pub countdown_s: f64,
+    started: Option<Instant>,
+    /// Index into the device series when the current capture began, so a run
+    /// analyses only its own motion.
+    baseline: usize,
+    /// The CPI the mouse is configured to, as typed.
+    pub claimed_cpi: String,
+    /// The distance actually swiped, as typed.
+    pub distance: String,
+    /// True when `distance` is in millimetres rather than inches.
+    pub distance_mm: bool,
+    pub cpi_trials: Vec<sensor::cpi::CpiResult>,
+    pub cpi_summary: Option<sensor::cpi::CpiSummary>,
+    pub drift: Option<sensor::drift::DriftResult>,
+    pub snap: Option<sensor::snap::SnapResult>,
+    pub smooth: Option<sensor::smooth::SmoothResult>,
+    pub tracking: Option<sensor::tracking::TrackResult>,
+    /// Reports the last capture actually collected, so a run that measured
+    /// nothing can say so instead of showing an empty result.
+    pub last_reports: usize,
+    pub last_export: Option<String>,
+}
+
+impl Default for SensorState {
+    fn default() -> Self {
+        SensorState {
+            test: sensor::protocol::Test::Cpi,
+            phase: SensorPhase::Idle,
+            countdown_s: 3.0,
+            started: None,
+            baseline: 0,
+            claimed_cpi: String::new(),
+            distance: String::new(),
+            distance_mm: false,
+            cpi_trials: Vec::new(),
+            cpi_summary: None,
+            drift: None,
+            snap: None,
+            smooth: None,
+            tracking: None,
+            last_reports: 0,
+            last_export: None,
+        }
+    }
+}
+
+impl SensorState {
+    /// Seconds elapsed in the current phase.
+    pub fn elapsed_s(&self) -> f64 {
+        self.started.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0)
+    }
+
+    pub fn claimed_cpi_value(&self) -> Option<f64> {
+        self.claimed_cpi.trim().parse::<f64>().ok().filter(|v| *v > 0.0)
+    }
+
+    /// The swiped distance in inches, whichever unit it was typed in.
+    pub fn distance_in(&self) -> Option<f64> {
+        let v = self.distance.trim().parse::<f64>().ok().filter(|v| *v > 0.0)?;
+        Some(if self.distance_mm { v / 25.4 } else { v })
+    }
 }
 
 /// Phase of an A/B run. Nothing about a trial's result is available to the
@@ -208,6 +290,7 @@ impl App {
             auto_capture: None,
             cps: CpsState::default(),
             ab: AbState::default(),
+            sensor: SensorState::default(),
         }
     }
 
@@ -422,6 +505,260 @@ impl App {
         self.cps.started = None;
     }
 
+    // ------------------------------------------------------------ sensor
+
+    /// Begins one sensor test after the countdown.
+    pub fn sensor_start(&mut self) {
+        if !self.session.running() {
+            self.session.start(self.selected.as_deref());
+        }
+        self.sensor.baseline = self.session.device.times_ns.len();
+        self.sensor.started = Some(Instant::now());
+        self.sensor.phase = SensorPhase::Countdown;
+    }
+
+    pub fn sensor_abandon(&mut self) {
+        self.sensor.phase = SensorPhase::Idle;
+        self.sensor.started = None;
+    }
+
+    /// Clears the results for the current test only. The other four are
+    /// separate measurements and clearing one should not discard them.
+    pub fn sensor_clear(&mut self) {
+        use sensor::protocol::Test;
+        match self.sensor.test {
+            Test::Cpi => {
+                self.sensor.cpi_trials.clear();
+                self.sensor.cpi_summary = None;
+            }
+            Test::Drift => self.sensor.drift = None,
+            Test::Snap => self.sensor.snap = None,
+            Test::Smooth => self.sensor.smooth = None,
+            Test::Tracking => self.sensor.tracking = None,
+        }
+        self.sensor.last_reports = 0;
+    }
+
+    /// Motion captured since the current run began.
+    fn sensor_reports(&self) -> Vec<sensor::Report> {
+        let s = &self.session.device;
+        let from = self.sensor.baseline.min(s.times_ns.len());
+        s.times_ns[from..]
+            .iter()
+            .zip(s.dx[from..].iter().zip(&s.dy[from..]))
+            .map(|(&t, (&x, &y))| sensor::Report::motion(t, x, y))
+            .collect()
+    }
+
+    fn tick_sensor(&mut self) {
+        use sensor::protocol::Test;
+        match self.sensor.phase {
+            SensorPhase::Idle => return,
+            SensorPhase::Countdown => {
+                if self.sensor.elapsed_s() >= self.sensor.countdown_s {
+                    // The baseline is taken again here, not at the button
+                    // press, so nothing that happened during the countdown
+                    // (setting the mouse down, lining it up on a mark) is
+                    // counted as part of the measurement.
+                    self.sensor.baseline = self.session.device.times_ns.len();
+                    self.sensor.started = Some(Instant::now());
+                    self.sensor.phase = SensorPhase::Recording;
+                }
+                return;
+            }
+            SensorPhase::Recording => {
+                if self.sensor.elapsed_s() < self.sensor.test.capture_s() {
+                    return;
+                }
+            }
+        }
+
+        let reports = self.sensor_reports();
+        let capture_s = self.sensor.test.capture_s();
+        self.sensor.last_reports = reports.len();
+        let cpi = self.sensor.claimed_cpi_value().unwrap_or(1600.0);
+        match self.sensor.test {
+            Test::Cpi => {
+                if let (Some(claimed), Some(dist)) =
+                    (self.sensor.claimed_cpi_value(), self.sensor.distance_in())
+                {
+                    let mut cfg = sensor::cpi::CpiConfig::new(claimed, dist);
+                    if self.sensor.distance_mm {
+                        // A millimetre ruler read to the nearest millimetre
+                        // carries a different uncertainty than an inch scale,
+                        // and that uncertainty sets the width of the pass band.
+                        cfg.distance_sigma_in = 1.0 / 25.4;
+                    }
+                    let r = sensor::cpi::analyze_cpi(&reports, &cfg);
+                    self.sensor.cpi_trials.push(r);
+                    self.sensor.cpi_summary =
+                        Some(sensor::cpi::summarize_cpi(&self.sensor.cpi_trials, claimed));
+                }
+            }
+            Test::Drift => {
+                let cfg = sensor::drift::DriftConfig { cpi, ..Default::default() };
+                self.sensor.drift = Some(sensor::drift::analyze_drift(&reports, capture_s, &cfg));
+            }
+            Test::Snap => {
+                let cfg = sensor::snap::SnapConfig { cpi, ..Default::default() };
+                self.sensor.snap = Some(sensor::snap::analyze_snap(&reports, &cfg));
+            }
+            Test::Smooth => {
+                let cfg = sensor::smooth::SmoothConfig::default();
+                self.sensor.smooth = Some(sensor::smooth::analyze_smoothing(&reports, &cfg));
+            }
+            Test::Tracking => {
+                let cfg = sensor::tracking::TrackConfig { cpi, ..Default::default() };
+                self.sensor.tracking =
+                    Some(sensor::tracking::analyze_tracking(&reports, &cfg));
+            }
+        }
+        self.sensor.phase = SensorPhase::Idle;
+        self.sensor.started = None;
+    }
+
+    /// Fills in one finished result per sensor test, so each result view can be
+    /// inspected without a mouse in hand. Command line only; nothing in the
+    /// normal path reaches it.
+    pub fn sensor_demo(&mut self) {
+        use sensor::{cpi, drift, smooth, snap, tracking};
+        self.sensor.claimed_cpi = "1600".into();
+        self.sensor.distance = "8".into();
+
+        // A sensor counting 7.7% high: past part variation, into "the number on
+        // the box is wrong".
+        let trials: Vec<cpi::CpiResult> = [1719.0, 1728.0, 1722.0]
+            .iter()
+            .map(|&m| cpi::CpiResult {
+                verdict: sensor::Verdict::Fail,
+                measured_cpi: m,
+                cpi_sigma: 6.1,
+                deviation: (m - 1600.0) / 1600.0,
+                deviation_z: 19.0,
+                l_net: m * 8.0,
+                l_path: m * 8.0 * 1.006,
+                l_axis: m * 8.0 * 0.999,
+                wobble: 1.006,
+                max_off_axis_counts: 91.0,
+                n_reports: 512,
+                duration_s: 0.48,
+                peak_ips: 22.0,
+                note: "",
+            })
+            .collect();
+        self.sensor.cpi_summary = Some(cpi::summarize_cpi(&trials, 1600.0));
+        self.sensor.cpi_trials = trials;
+
+        let axis = |net: f64, abs: f64, sq: f64, z: f64, zs: f64| drift::AxisStats {
+            net,
+            abs_sum: abs,
+            sum_sq: sq,
+            n_nonzero: 61,
+            n_pos: 46,
+            n_neg: 15,
+            z_mean: z,
+            p_mean: 0.0001,
+            z_sign: zs,
+            p_sign: 0.0001,
+            directionality: net.abs() / abs,
+            directionality_null: 0.10,
+            ..Default::default()
+        };
+        self.sensor.drift = Some(drift::DriftResult {
+            verdict: sensor::Verdict::Warn,
+            duration_s: 15.0,
+            n_reports: 74,
+            n_moving_reports: 74,
+            x: axis(31.0, 61.0, 61.0, 3.97, 3.97),
+            y: axis(-1.0, 13.0, 13.0, -0.28, -0.28),
+            jitter_cps: 4.93,
+            drift_cps: 2.07,
+            drift_ips: 0.0013,
+            drift_detected: true,
+            jitter_detected: false,
+            note: "the pointer is walking, not shimmering: one axis has a consistent bias",
+        });
+
+        // The interesting snapping case: the primary test could not run.
+        self.sensor.snap = Some(snap::SnapResult {
+            verdict: sensor::Verdict::Inconclusive,
+            n_reports: 498,
+            n_bins: 156,
+            bin_ns: 3_000_000,
+            travel_in: 4.86,
+            median_ips: 11.2,
+            sigma_perp_counts: 21.4,
+            straightness: 0.00275,
+            perp_step_sd: 0.51,
+            hf_perp_ratio: 1.94,
+            hf_aniso: f64::NAN,
+            hf_along_rms: 0.42,
+            aniso_applicable: false,
+            axis_lock_frac: 0.19,
+            axis_lock_expected: 0.18,
+            axis_lock_excess: 0.01,
+            angle_r_bar: 0.97,
+            angle_sd_deg: 13.6,
+            angle_on_octant_frac: 0.21,
+            note: "this sensor is too quiet for the primary test: with almost no \
+                   high-frequency noise along the stroke there is nothing for the \
+                   across-stroke comparison to measure. The secondary statistics below \
+                   still apply.",
+        });
+
+        self.sensor.smooth = Some(smooth::SmoothResult {
+            verdict: sensor::Verdict::Fail,
+            report_rate_hz: 1000.0,
+            n_reports: 601,
+            tail_len: 11,
+            tail_ms: 14.21,
+            tail_reports: 15,
+            tail_floor_counts: 2.0,
+            decay_tau_ms: 2.95,
+            decay_r2: 0.98,
+            alpha_from_decay: 0.288,
+            rho1_raw: 0.827,
+            rho1_corrected: 0.905,
+            alpha_from_rho1: 0.095,
+            hp_window: 17,
+            hf_attenuation_db: 11.4,
+            alpha_from_psd: 1.0,
+            median_counts_per_report: 29.0,
+            n_uniform: 598,
+            note: "high-frequency deltas are strongly serially correlated: firmware low-pass",
+        });
+
+        self.sensor.tracking = Some(tracking::TrackResult {
+            verdict: sensor::Verdict::Warn,
+            field: tracking::FieldWidth {
+                observed_max: 127,
+                matched_bound: Some(127),
+                clip_atom: 0.41,
+                saturating: true,
+            },
+            max_tracking_ips: 79.4,
+            bounded_below: false,
+            peak_observed_ips: 118.0,
+            first_failure_ips: 81.2,
+            first_failure_reason: "per-report counts pinned at the field maximum",
+            n_windows: 214,
+            n_failed_windows: 37,
+            note: "motion is limited by the report format rather than by the sensor",
+        });
+
+        self.section = Section::Sensor;
+    }
+
+    /// Selects one sensor test by name, for the command line.
+    pub fn select_sensor_test(&mut self, name: &str) {
+        let n = name.to_ascii_lowercase();
+        for t in sensor::protocol::Test::ALL {
+            if format!("{t:?}").to_ascii_lowercase() == n {
+                self.sensor.test = t;
+            }
+        }
+    }
+
     /// Selects a section by name, for the command line.
     pub fn select_section(&mut self, name: &str) {
         let n = name.to_ascii_lowercase();
@@ -501,6 +838,7 @@ impl App {
         self.session.pump_app(ctx);
         self.tick_cps();
         self.tick_ab();
+        self.tick_sensor();
 
         // Re-analysing a long capture every frame would make the interface
         // the slowest thing in the program, so it runs a few times a second.
@@ -639,6 +977,7 @@ impl eframe::App for App {
                         Section::Clicks => sections::clicks::show(self, ui),
                         Section::Cps => sections::cps::show(self, ui),
                         Section::Ab => sections::ab::show(self, ui),
+                        Section::Sensor => sections::sensor::show(self, ui),
                     });
             });
     }

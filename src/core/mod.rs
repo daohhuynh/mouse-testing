@@ -7,5 +7,6 @@ pub mod export;
 pub mod hid_descriptor;
 pub mod polling;
 pub mod ring;
+pub mod sensor;
 pub mod sim;
 pub mod sample;

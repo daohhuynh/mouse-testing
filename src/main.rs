@@ -92,6 +92,11 @@ fn main() -> eframe::Result {
             Some((secs, out))
         });
     let ab_demo = args.iter().any(|a| a == "--ab-demo");
+    let sensor_demo = args.iter().any(|a| a == "--sensor-demo");
+    let sensor_test = args
+        .iter()
+        .position(|a| a == "--sensor-test")
+        .and_then(|i| args.get(i + 1).cloned());
     let shot = std::env::args()
         .skip_while(|a| a != "--screenshot")
         .nth(1)
@@ -107,6 +112,12 @@ fn main() -> eframe::Result {
             }
             if ab_demo {
                 app.ab_demo();
+            }
+            if sensor_demo {
+                app.sensor_demo();
+            }
+            if let Some(t) = sensor_test.clone() {
+                app.select_sensor_test(&t);
             }
             if let Some((secs, out)) = auto.clone() {
                 app.auto_capture = Some(app::AutoCapture {

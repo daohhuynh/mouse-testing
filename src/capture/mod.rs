@@ -29,6 +29,12 @@ pub struct Series {
     pub times_ns: Vec<u64>,
     /// Motion magnitude in device counts, parallel to `times_ns`.
     pub counts: Vec<i32>,
+    /// Signed per-axis motion, parallel to `times_ns`. The polling analysis only
+    /// needs the magnitude, but every sensor test is about direction: a CPI
+    /// measurement needs the net displacement, and snapping is a statement
+    /// about the axis across the stroke.
+    pub dx: Vec<i32>,
+    pub dy: Vec<i32>,
     pub total: u64,
     /// Samples the ring had to discard because the consumer fell behind.
     pub ring_drops: u64,
@@ -44,6 +50,8 @@ impl Series {
     pub fn clear(&mut self) {
         self.times_ns.clear();
         self.counts.clear();
+        self.dx.clear();
+        self.dy.clear();
         self.total = 0;
         self.ring_drops = 0;
     }
@@ -53,6 +61,15 @@ impl Series {
             .iter()
             .zip(&self.counts)
             .map(|(&t, &c)| polling::Report { t_ns: t, counts: c })
+            .collect()
+    }
+
+    /// The same series as motion reports for the sensor detectors.
+    pub fn motion(&self) -> Vec<crate::core::sensor::Report> {
+        self.times_ns
+            .iter()
+            .zip(self.dx.iter().zip(&self.dy))
+            .map(|(&t, (&x, &y))| crate::core::sensor::Report::motion(t, x, y))
             .collect()
     }
 
@@ -388,6 +405,8 @@ impl Session {
                         // and would suppress the whole analysis.
                         -1
                     });
+                    self.device.dx.push(s.dx);
+                    self.device.dy.push(s.dy);
                     self.device.total += 1;
                     if s.has(Flags::DECODED) {
                         self.push_button_edges(s.device, s.buttons_state, t, Tier::Device);
@@ -418,6 +437,8 @@ impl Session {
                     self.system
                         .counts
                         .push(s.dx.unsigned_abs().saturating_add(s.dy.unsigned_abs()) as i32);
+                    self.system.dx.push(s.dx);
+                    self.system.dy.push(s.dy);
                     self.system.total += 1;
                     if self.button_source != Some(Tier::Device) {
                         self.push_button_transitions(s.buttons_down, s.buttons_up, t, Tier::System);
@@ -453,6 +474,8 @@ impl Session {
                     self.device
                         .counts
                         .push(s.dx.unsigned_abs().saturating_add(s.dy.unsigned_abs()) as i32);
+                    self.device.dx.push(s.dx);
+                    self.device.dy.push(s.dy);
                     self.device.total += 1;
                     self.push_button_transitions(s.buttons_down, s.buttons_up, t, Tier::Device);
                 }
@@ -473,8 +496,15 @@ impl Session {
                     let t = self.to_ns(s.t);
                     self.system.times_ns.push(t);
                     // The hook reports a cursor position, not a delta, so
-                    // motion magnitude is not available at this level.
+                    // motion magnitude is not available at this level. The
+                    // per-axis vectors are still pushed, because every consumer
+                    // indexes them against `times_ns` and a short vector would
+                    // silently pair a timestamp with another report's motion.
+                    // Nothing reads them: the sensor tests run on the device
+                    // tier, which does carry real deltas.
                     self.system.counts.push(0);
+                    self.system.dx.push(0);
+                    self.system.dy.push(0);
                     self.system.total += 1;
                     if self.button_source != Some(Tier::Device) {
                         self.push_button_transitions(s.buttons_down, s.buttons_up, t, Tier::System);

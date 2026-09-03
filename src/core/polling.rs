@@ -49,6 +49,21 @@ pub enum Verdict {
 }
 
 impl Verdict {
+    /// Combine two verdicts, keeping the one that most demands attention.
+    ///
+    /// `Inconclusive` deliberately beats `Pass`: a section that could not
+    /// measure one of its parts has not passed, and letting a `Pass` mask it
+    /// would be exactly the silent zero the whole app is built to avoid.
+    pub fn worst(self, other: Verdict) -> Verdict {
+        use Verdict::*;
+        match (self, other) {
+            (Fail, _) | (_, Fail) => Fail,
+            (Warn, _) | (_, Warn) => Warn,
+            (Inconclusive, _) | (_, Inconclusive) => Inconclusive,
+            _ => Pass,
+        }
+    }
+
     pub fn level(self) -> crate::ui::theme::Level {
         use crate::ui::theme::Level;
         match self {

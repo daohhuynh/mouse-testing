@@ -203,6 +203,41 @@ pub fn nav_row(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response 
     resp
 }
 
+/// A selectable chip sized to its own text, for a row of choices laid out
+/// side by side. `nav_row` takes the full available width, which is right for a
+/// vertical list and wrong for a horizontal one: the first chip would eat the
+/// row and the rest would be pushed off the panel.
+pub fn chip(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
+    let w = mono_width(ui, text.chars().count() + 2);
+    let h = row_height(ui) + 4.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter_at(rect);
+        let fill = if selected {
+            theme::GREY_MID
+        } else if resp.hovered() {
+            theme::GREY_DIM
+        } else {
+            theme::BLACK
+        };
+        p.rect_filled(rect, theme::NO_ROUND, fill);
+        p.rect_stroke(
+            rect,
+            theme::NO_ROUND,
+            egui::Stroke::new(1.0, theme::GREY_LINE),
+            egui::StrokeKind::Inside,
+        );
+        p.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            text,
+            TextStyle::Button.resolve(ui.style()),
+            if selected { theme::WHITE } else { theme::GREY_TEXT },
+        );
+    }
+    resp
+}
+
 /// Framed box used to group a block of readouts.
 pub fn boxed<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
