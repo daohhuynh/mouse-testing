@@ -40,7 +40,7 @@ mouse testing suite: measures what a pointing device actually does.
 
   inspecting result views without hardware
     --ab-demo
-    --sensor-demo [--sensor-test NAME]  cpi drift snap smooth tracking
+    --sensor-demo [--sensor-test NAME]  cpi drift snap smooth tracking lod
     --scroll-demo
 
 Exports go to ~/mouse-testing-exports. No administrator or root privilege is

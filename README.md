@@ -74,7 +74,26 @@ in more detail below.
 
 **SENSOR** verifies CPI against a distance you measure, detects drift and
 jitter while stationary, detects angle snapping from a hand-drawn line, detects
-motion smoothing, and finds the speed at which tracking degrades.
+motion smoothing, finds the speed at which tracking degrades, and brackets the
+lift-off distance.
+
+The lift-off test is measured without ever lifting the mouse. Two piles of
+cards lie on the pad with a slot between them: the mouse rides on the cards and
+the sensor looks through the slot at the pad, one pile-thickness further away.
+Nothing is climbed, so the height under the sensor is a step rather than a
+smear across the mouse's own footprint, and the sensor releases at the pile
+height and re-acquires at zero, which separates the release threshold from the
+re-acquire one. A rig that lifts the mouse measures the two mixed together, and
+cannot be used at all on a mouse whose cable is disturbed by lifting it.
+
+Its whole difficulty is that a sensor which is not tracking reports nothing,
+and so does a hand that has stopped. Putting the slot in the middle of the
+sweep is what separates them: a crossing is entered and left at cruise speed,
+in the same direction, at the same place on the desk every time, and none of
+those three is true of a hand coming to rest. The turnarounds at the ends are
+the control population, since each is a full stop taken with the sensor
+demonstrably on the surface. The answer is a bracket rather than a number,
+because it can never be finer than one card.
 
 **SCROLL** counts detents in both directions and detects reversed and skipped
 steps, on both the vertical wheel and a tilt wheel if there is one.
@@ -436,7 +455,7 @@ Columns at the second and third guides are reports that went missing.
 SENSOR and SCROLL are the two sections that need raw access to the mouse. If
 macOS Input Monitoring is not granted, both say so and measure nothing.
 
-There are five tests. Each has its own on-screen instructions, its own fixed
+There are six tests. Each has its own on-screen instructions, its own fixed
 recording length, and a countdown at the start so you have time to let go of
 whatever you used to press the button and get your hand on the mouse you are
 testing. Leave the countdown at 3 seconds or more. At 0 seconds, the movement
@@ -488,6 +507,33 @@ abrupt stop to measure, so glide the mouse at a moderate pace into the edge of
 the mousepad or a book laid on the desk, and let that stop it dead. A hand
 slowing down on its own looks the same as a smoothed mouse, which is why the
 stop has to be sudden.
+
+**lift-off distance** finds how high the mouse has to be before the sensor
+stops seeing the pad, which is whether the pointer moves when you pick the
+mouse up to reposition it. **You never lift the mouse for this test.** Instead
+you build a little runway: two piles of the same number of cards, side by side
+on the pad, with a slot of a few millimetres between them running across the
+way you will sweep. The mouse rides on the cards and the sensor looks down the
+slot at the pad, which is one pile further away than the cards are. Tape it
+down.
+
+Measure twenty cards at once with a ruler and type that in, then how many cards
+are in each pile and how wide the slot is. Twenty because a ruler read to half
+a millimetre is a third of a card, and dividing one reading across twenty is
+the cheapest way to make the height better than your ruler.
+
+Run the control first, with the cards taken away and 0 entered. It says nothing
+about your mouse: it proves you sweep without stopping and that the link is not
+dropping reports. Then sweep back and forth across the slot for the whole
+recording, turning round at both ends well clear of the slot, and do not stop
+in the middle. The turns are not wasted time. Each one is a full stop taken
+with the sensor still on the pad, and that is how the app learns what your own
+stops look like rather than assuming.
+
+Then change the number of cards and run it again. Each run answers one
+question, did it track at that height, and the answer is the gap between the
+tallest pile that still tracked and the shortest that did not. There is no
+single number, and the gap can never be narrower than one card.
 
 **maximum tracking speed** finds the speed at which the sensor stops keeping
 up, which is the fast flick that lands somewhere you did not aim. Swipe as fast
@@ -959,6 +1005,13 @@ actuate. The score is how many of those attempts the mouse registered.
 **"Both directions"** for the scroll wheel is read as up and down. The tilt
 wheel is analysed as a separate encoder when it is present, on the grounds that
 it fails independently, but it is not what the requirement meant.
+
+The **lift-off tolerance** of 0.3 mm, used when comparing the bracket against
+the height a mouse is configured to, is dominated by the surface: the same
+mouse legitimately reads differently on a cloth pad that compresses under the
+cards than on glass that does not. The figure is reasoned rather than measured,
+and it is the one that decides whether a mouse is called a liar about its own
+setting.
 
 **Contact bounce thresholds** are anchored on Omron D2F/D2FC datasheet figures
 (5 ms typical, 10 ms worst case) and community measurements of butterfly and

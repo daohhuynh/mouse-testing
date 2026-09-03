@@ -5,7 +5,7 @@
 //! guess when the movement was wrong. Keeping the instructions next to the
 //! capture length means the screen and the analysis cannot drift apart.
 
-/// The five sensor measurements, in the order they appear in the interface.
+/// The six sensor measurements, in the order they appear in the interface.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Test {
     Cpi,
@@ -13,15 +13,17 @@ pub enum Test {
     Snap,
     Smooth,
     Tracking,
+    Lod,
 }
 
 impl Test {
-    pub const ALL: [Test; 5] = [
+    pub const ALL: [Test; 6] = [
         Test::Cpi,
         Test::Drift,
         Test::Snap,
         Test::Smooth,
         Test::Tracking,
+        Test::Lod,
     ];
 
     pub fn title(self) -> &'static str {
@@ -31,6 +33,7 @@ impl Test {
             Test::Snap => "angle snapping and path correction",
             Test::Smooth => "motion smoothing",
             Test::Tracking => "maximum tracking speed",
+            Test::Lod => "lift-off distance",
         }
     }
 
@@ -42,6 +45,7 @@ impl Test {
             Test::Snap => "Does the firmware straighten your line for you?",
             Test::Smooth => "Does motion keep arriving after the mouse has stopped?",
             Test::Tracking => "How fast can you move before the sensor loses the surface?",
+            Test::Lod => "How high can it rise before the sensor stops seeing the pad?",
         }
     }
 
@@ -61,6 +65,9 @@ impl Test {
             Test::Smooth => 8.0,
             // Several swipes of increasing speed.
             Test::Tracking => 20.0,
+            // Thirty to forty half-strokes, so a dozen clean crossings survive
+            // discarding the ones whose edges fall awkwardly.
+            Test::Lod => 20.0,
         }
     }
 
@@ -115,6 +122,39 @@ impl Test {
                  measurement.",
                 "If nothing ever breaks, the answer is a lower bound: you did not find the \
                  limit, which is not the same as there being none.",
+            ],
+            Test::Lod => &[
+                "Build the runway. Two piles of the same number of cards, side by side on \
+                 the pad, with a slot of a few millimetres between them running across the \
+                 way you will sweep. Tape them down. The mouse rides on the cards and the \
+                 sensor looks down the slot at the pad, so over the cards it sits at its \
+                 normal height and over the slot it is raised by the thickness of one pile. \
+                 A stack laid flat UNDER the whole mouse raises the sensor and the surface \
+                 it looks at by the same amount and measures nothing.",
+                "The mouse never leaves the desk in this test. Nothing is lifted, so a \
+                 cable never moves.",
+                "Check the slot by sliding the mouse across it slowly. If a foot drops in, \
+                 the slot is too wide: the mouse tilts and the height stops being the \
+                 height you measured. Make it narrower.",
+                "Measure twenty cards in one stack with a ruler and enter that figure, then \
+                 how many cards are in each pile and how wide the slot is. Twenty at once \
+                 because a ruler read to half a millimetre is a third of a card, and \
+                 dividing that across twenty costs one reading and buys back a factor of \
+                 twenty.",
+                "Run the control first, with the cards taken away and 0 entered. It says \
+                 nothing about the mouse: it proves that you sweep without stopping and \
+                 that the link is not dropping reports. Nothing at any height is judged \
+                 until it passes.",
+                "Press start, wait out the countdown, then sweep back and forth across the \
+                 slot for the whole recording. Turn round at both ends, well clear of the \
+                 slot, and do not stop in the middle of a sweep. The turns are not wasted \
+                 time: each one is a full stop taken with the sensor on the surface, and \
+                 that is how the app learns what your own stops look like instead of \
+                 assuming.",
+                "Then change the number of cards and run it again. Each run answers one \
+                 question, did it track at that height, and the answer is the gap between \
+                 the tallest pile that tracked and the shortest that did not. That gap can \
+                 never be narrower than one card.",
             ],
         }
     }

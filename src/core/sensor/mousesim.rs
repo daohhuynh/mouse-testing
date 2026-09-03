@@ -103,6 +103,61 @@ pub trait Traj {
     fn duration(&self) -> f64;
 }
 
+/// Back-and-forth sweeping along one axis, for the lift-off rig.
+///
+/// The lift-off test needs many traversals of a fixed point on the desk rather
+/// than one stroke, and it needs the turns to be real stops, because the turns
+/// are the control population the detector learns the user's own stops from.
+/// Each half-stroke is a minimum-jerk move, so the ends decelerate and
+/// accelerate the way a hand does.
+#[derive(Clone, Debug)]
+pub struct ShuttleTraj {
+    pub len_in: f64,
+    pub dir_rad: f64,
+    /// Seconds per half-stroke.
+    pub half_s: f64,
+    pub n_half: usize,
+    pub tremor_in: f64,
+    pub tremor_hz: f64,
+    pub ph: [f64; 2],
+}
+
+impl ShuttleTraj {
+    pub fn new(rng: &mut Rng, len_in: f64, half_s: f64, n_half: usize) -> Self {
+        ShuttleTraj {
+            len_in,
+            dir_rad: 0.0,
+            half_s,
+            n_half,
+            tremor_in: 0.012,
+            tremor_hz: 10.0,
+            ph: [rng.unit() * std::f64::consts::TAU, rng.unit() * std::f64::consts::TAU],
+        }
+    }
+}
+
+impl Traj for ShuttleTraj {
+    fn duration(&self) -> f64 {
+        self.half_s * self.n_half as f64
+    }
+    fn pos(&self, t: f64) -> (f64, f64) {
+        let t = t.clamp(0.0, self.duration());
+        let k = ((t / self.half_s) as usize).min(self.n_half.saturating_sub(1));
+        let local = (t - k as f64 * self.half_s) / self.half_s;
+        // Minimum-jerk: still at both ends, so every turn is a genuine stop.
+        let f = 10.0 * local.powi(3) - 15.0 * local.powi(4) + 6.0 * local.powi(5);
+        let along = if k % 2 == 0 {
+            f * self.len_in
+        } else {
+            (1.0 - f) * self.len_in
+        };
+        let tr = self.tremor_in
+            * (std::f64::consts::TAU * self.tremor_hz * t + self.ph[0]).sin();
+        let (c, s) = (self.dir_rad.cos(), self.dir_rad.sin());
+        (along * c - tr * s, along * s + tr * c)
+    }
+}
+
 /// Straight swipe with a minimum-jerk speed profile, plus wander and tremor.
 #[derive(Clone, Debug)]
 pub struct SwipeTraj {

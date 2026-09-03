@@ -118,6 +118,9 @@ fn verdict_of(app: &App, t: Test) -> Option<Verdict> {
         Test::Snap => app.sensor.snap.as_ref().map(|r| r.verdict),
         Test::Smooth => app.sensor.smooth.as_ref().map(|r| r.verdict),
         Test::Tracking => app.sensor.tracking.as_ref().map(|r| r.verdict),
+        // The ladder's verdict, not the last run's: one run answers only
+        // "tracked at this height", which is not a judgement on the mouse.
+        Test::Lod => app.sensor.lod_summary.as_ref().map(|s| s.verdict),
     }
 }
 
@@ -181,6 +184,53 @@ fn setup(app: &mut App, ui: &mut egui::Ui) {
                 w::fixed_label(ui, "click to switch units", 24, Level::Off);
             });
         }
+        if test == Test::Lod {
+            ui.horizontal(|ui| {
+                w::fixed_label(ui, "twenty cards", 18, Level::Off);
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.sensor.shim_ref_mm)
+                        .desired_width(90.0)
+                        .hint_text("6.0"),
+                );
+                ui.add_space(6.0);
+                w::fixed_label(ui, "mm, measured once with a ruler", 50, Level::Off);
+            });
+            ui.horizontal(|ui| {
+                w::fixed_label(ui, "cards per pile", 18, Level::Off);
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.sensor.shims_in_stack)
+                        .desired_width(90.0)
+                        .hint_text("0"),
+                );
+                ui.add_space(6.0);
+                let h = app
+                    .sensor
+                    .lod_height_mm()
+                    .map(|v| format!("= {v:.2} mm; 0 is the control run"))
+                    .unwrap_or_else(|| "0 is the control run".into());
+                w::fixed_label(ui, &h, 50, Level::Off);
+            });
+            ui.horizontal(|ui| {
+                w::fixed_label(ui, "slot width", 18, Level::Off);
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.sensor.slot_mm)
+                        .desired_width(90.0)
+                        .hint_text("6"),
+                );
+                ui.add_space(6.0);
+                w::fixed_label(ui, "mm, the gap between the two piles", 50, Level::Off);
+            });
+            ui.horizontal(|ui| {
+                w::fixed_label(ui, "configured LOD", 18, Level::Off);
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.sensor.claimed_lod_mm)
+                        .desired_width(90.0)
+                        .hint_text("1.0"),
+                );
+                ui.add_space(6.0);
+                w::fixed_label(ui, "mm, optional: what the mouse is set to", 50, Level::Off);
+            });
+        }
         ui.horizontal(|ui| {
             w::fixed_label(ui, "countdown", 18, Level::Off);
             for secs in [0.0f64, 3.0, 5.0, 10.0] {
@@ -202,6 +252,14 @@ fn setup(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(8.0);
     let ready = match test {
         Test::Cpi => app.sensor.claimed_cpi_value().is_some() && app.sensor.distance_in().is_some(),
+        // The height and the slot are both structural: without the slot width
+        // there is nothing to check a silence against, and without the pile
+        // count the run cannot be placed on the ladder.
+        Test::Lod => {
+            app.sensor.claimed_cpi_value().is_some()
+                && app.sensor.lod_height_mm().is_some()
+                && app.sensor.slot_mm_value().is_some()
+        }
         _ => true,
     };
     ui.horizontal(|ui| {
@@ -228,8 +286,13 @@ fn setup(app: &mut App, ui: &mut egui::Ui) {
         w::status_line(
             ui,
             Level::Warn,
-            "Enter the configured CPI and the distance you will swipe. Without both there \
-             is nothing to compare a count against.",
+            if test == Test::Lod {
+                "Enter the configured CPI, the twenty-card thickness, how many cards are in \
+                 each pile, and the slot width. Enter 0 cards for the control run."
+            } else {
+                "Enter the configured CPI and the distance you will swipe. Without both \
+                 there is nothing to compare a count against."
+            },
         );
     }
 }
@@ -290,6 +353,7 @@ fn result(app: &mut App, ui: &mut egui::Ui) {
         Test::Snap => snap_result(app, ui),
         Test::Smooth => smooth_result(app, ui),
         Test::Tracking => tracking_result(app, ui),
+        Test::Lod => lod_result(app, ui),
     }
 }
 
@@ -899,4 +963,108 @@ fn tracking_result(app: &mut App, ui: &mut egui::Ui) {
     });
     ui.add_space(6.0);
     empty_note(app, ui);
+}
+
+fn lod_result(app: &mut App, ui: &mut egui::Ui) {
+    let Some(r) = app.sensor.lod_last.clone() else {
+        w::subheading(ui, "result");
+        w::note_indent(ui, 0.0, "No run recorded yet.");
+        return;
+    };
+    w::subheading(ui, "last run");
+    w::boxed(ui, |ui| {
+        let (level, text) = match r.state {
+            crate::core::sensor::lod::LodState::Tracked => (Level::Pass, "TRACKED at this height"),
+            crate::core::sensor::lod::LodState::Lost => (Level::Fail, "LOST the pad at this height"),
+            crate::core::sensor::lod::LodState::Marginal => (Level::Warn, "MARGINAL at this height"),
+            crate::core::sensor::lod::LodState::Unknown => (Level::Off, "no answer from this run"),
+        };
+        w::status_line(ui, level, text);
+        w::note_indent(ui, 7.0, r.note);
+        ui.add_space(4.0);
+        w::readout(ui, "height", &format!("{:.2}", r.height_mm), 11, "mm", Level::Info);
+        w::readout(ui, "reports", &format!("{}", r.n_reports), 11, "", Level::Info);
+        w::readout(ui, "sweeps", &format!("{}", r.n_half_strokes), 11, "", Level::Info);
+        w::readout(ui, "turns", &format!("{}", r.n_turnarounds), 11, "", Level::Info);
+        w::readout(ui, "silences", &format!("{}", r.n_silences), 11, "", Level::Info);
+        w::readout(ui, "crossings", &format!("{}", r.n_crossings), 11, "", Level::Info);
+        w::readout(ui, "of these, stops", &format!("{}", r.n_pauses), 11, "", Level::Info);
+        w::readout(
+            ui,
+            "passes lost",
+            &format!("{:.0}", r.loss_fraction * 100.0),
+            11,
+            "%",
+            Level::Info,
+        );
+        if r.n_crossings > 0 {
+            w::readout(ui, "slot found at", &format!("{:.1}", r.slot_at_mm), 11, "mm", Level::Info);
+            w::readout(ui, "wander", &format!("{:.1}", r.slot_spread_mm), 11, "mm", Level::Info);
+            w::readout(
+                ui,
+                "silence width",
+                &format!("{:.1}", r.silence_width_mm),
+                11,
+                "mm",
+                Level::Info,
+            );
+        }
+        w::note_indent(
+            ui,
+            0.0,
+            "A crossing is a silence entered and left at full speed, in the same direction, \
+             in the same place every sweep. A stop is a silence with a hand slowing down on \
+             one side of it. The turns at the ends of your sweep are what the difference is \
+             measured against, so they are not wasted time.",
+        );
+    });
+
+    ui.add_space(8.0);
+    w::subheading(ui, "the ladder");
+    w::boxed(ui, |ui| {
+        if app.sensor.lod_rungs.is_empty() {
+            w::note_indent(ui, 0.0, "Nothing yet.");
+            return;
+        }
+        for rung in &app.sensor.lod_rungs {
+            let (lvl, word) = match rung.state {
+                crate::core::sensor::lod::LodState::Tracked => (Level::Pass, "tracked"),
+                crate::core::sensor::lod::LodState::Lost => (Level::Fail, "lost"),
+                crate::core::sensor::lod::LodState::Marginal => (Level::Warn, "marginal"),
+                crate::core::sensor::lod::LodState::Unknown => (Level::Off, "-"),
+            };
+            ui.horizontal(|ui| {
+                w::fixed_label(
+                    ui,
+                    &format!("{:.2} mm", rung.height_mm),
+                    12,
+                    Level::Info,
+                );
+                w::fixed_value(ui, word, 10, lvl);
+            });
+        }
+        if let Some(s) = &app.sensor.lod_summary {
+            ui.add_space(4.0);
+            if s.verdict == Verdict::Inconclusive {
+                w::status_line(ui, Level::Off, s.note);
+            } else {
+                w::status_line(
+                    ui,
+                    if s.verdict == Verdict::Fail { Level::Fail } else { Level::Pass },
+                    &format!(
+                        "Lift-off distance is between {:.2} and {:.2} mm. {}",
+                        s.tracked_to_mm, s.lost_at_mm, s.note
+                    ),
+                );
+                w::readout(ui, "bracket", &format!("{:.2}", s.bracket_mm), 11, "mm", Level::Info);
+                w::note_indent(
+                    ui,
+                    0.0,
+                    "The bracket can never be narrower than one card. There is no single \
+                     number to give, and a midpoint would invent a precision the cards \
+                     cannot carry.",
+                );
+            }
+        }
+    });
 }

@@ -216,6 +216,20 @@ pub struct SensorState {
     pub snap: Option<sensor::snap::SnapResult>,
     pub smooth: Option<sensor::smooth::SmoothResult>,
     pub tracking: Option<sensor::tracking::TrackResult>,
+    /// Thickness of TWENTY cards, as typed. Twenty because a ruler read to half
+    /// a millimetre is a third of a card, and dividing one reading across
+    /// twenty is the only cheap way to make the height better than the ruler.
+    pub shim_ref_mm: String,
+    /// Cards in each pile, changed between runs to walk the ladder.
+    pub shims_in_stack: String,
+    /// The slot's width, as typed.
+    pub slot_mm: String,
+    /// What the mouse is configured to, if the user knows.
+    pub claimed_lod_mm: String,
+    pub lod_last: Option<sensor::lod::LodResult>,
+    /// Every height run so far, which is the only thing that can be bracketed.
+    pub lod_rungs: Vec<sensor::lod::LodRung>,
+    pub lod_summary: Option<sensor::lod::LodSummary>,
     /// Reports the last capture actually collected, so a run that measured
     /// nothing can say so instead of showing an empty result.
     pub last_reports: usize,
@@ -243,6 +257,13 @@ impl Default for SensorState {
             snap: None,
             smooth: None,
             tracking: None,
+            shim_ref_mm: String::new(),
+            shims_in_stack: String::new(),
+            slot_mm: String::new(),
+            claimed_lod_mm: String::new(),
+            lod_last: None,
+            lod_rungs: Vec::new(),
+            lod_summary: None,
             last_reports: 0,
         }
     }
@@ -262,6 +283,33 @@ impl SensorState {
     pub fn distance_in(&self) -> Option<f64> {
         let v = self.distance.trim().parse::<f64>().ok().filter(|v| *v > 0.0)?;
         Some(if self.distance_mm { v / 25.4 } else { v })
+    }
+
+    /// Height of one pile, from the twenty-card reference and the pile count.
+    ///
+    /// Zero is a legitimate answer: it is the control run, with the cards taken
+    /// away, and the ladder refuses to bracket anything until one has passed.
+    pub fn lod_height_mm(&self) -> Option<f64> {
+        let n: f64 = self.shims_in_stack.trim().parse().ok()?;
+        if n < 0.0 {
+            return None;
+        }
+        if n == 0.0 {
+            return Some(0.0);
+        }
+        let twenty: f64 = self.shim_ref_mm.trim().parse().ok()?;
+        if twenty <= 0.0 {
+            return None;
+        }
+        Some(n * twenty / 20.0)
+    }
+
+    pub fn slot_mm_value(&self) -> Option<f64> {
+        self.slot_mm.trim().parse::<f64>().ok().filter(|v| *v > 0.0)
+    }
+
+    pub fn claimed_lod_value(&self) -> Option<f64> {
+        self.claimed_lod_mm.trim().parse::<f64>().ok().filter(|v| *v > 0.0)
     }
 }
 
@@ -651,6 +699,11 @@ impl App {
             Test::Snap => self.sensor.snap = None,
             Test::Smooth => self.sensor.smooth = None,
             Test::Tracking => self.sensor.tracking = None,
+            Test::Lod => {
+                self.sensor.lod_last = None;
+                self.sensor.lod_rungs.clear();
+                self.sensor.lod_summary = None;
+            }
         }
         self.sensor.last_reports = 0;
     }
@@ -751,6 +804,34 @@ impl App {
                 let cfg = sensor::tracking::TrackConfig { cpi, ..Default::default() };
                 self.sensor.tracking =
                     Some(sensor::tracking::analyze_tracking(&reports, &cfg));
+            }
+            Test::Lod => {
+                if let (Some(height), Some(slot)) =
+                    (self.sensor.lod_height_mm(), self.sensor.slot_mm_value())
+                {
+                    let cfg = sensor::lod::LodConfig::new(height, slot, cpi);
+                    let r = sensor::lod::analyze_lod(&reports, &cfg);
+                    // Only a run that concluded something joins the ladder. A
+                    // refused run has no state to bracket, and recording it as
+                    // one would put a rung in the ladder that says nothing.
+                    if r.state != sensor::lod::LodState::Unknown {
+                        self.sensor
+                            .lod_rungs
+                            .retain(|x| (x.height_mm - height).abs() > 1e-9);
+                        self.sensor.lod_rungs.push(sensor::lod::LodRung {
+                            height_mm: height,
+                            state: r.state,
+                        });
+                        self.sensor
+                            .lod_rungs
+                            .sort_by(|a, b| a.height_mm.partial_cmp(&b.height_mm).unwrap());
+                        self.sensor.lod_summary = Some(sensor::lod::summarize_lod(
+                            &self.sensor.lod_rungs,
+                            self.sensor.claimed_lod_value(),
+                        ));
+                    }
+                    self.sensor.lod_last = Some(r);
+                }
             }
         }
         self.sensor.phase = SensorPhase::Idle;

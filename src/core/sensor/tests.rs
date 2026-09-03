@@ -615,3 +615,183 @@ fn scroll_refuses_a_capture_whose_clock_went_backwards() {
     let out = scroll::analyze_scroll(&reports, &scroll::ScrollConfig::default());
     assert_eq!(out.verdict, Verdict::Inconclusive);
 }
+
+// ---------------------------------------------------------------- lift-off
+
+/// A shuttle across the desk, optionally with a band the sensor cannot see.
+///
+/// Blanking removes the reports outright rather than zeroing them, because that
+/// is what a device does when it has nothing to send: a zeroed report would
+/// still be a report, and would give the detector information the real failure
+/// never provides.
+fn shuttle(seed: u64, n_half: usize, blind: Option<(f64, f64)>) -> Vec<Report> {
+    let sim = MouseSim { cpi: 1600.0, ..Default::default() };
+    let mut r = rng(seed);
+    let traj = ShuttleTraj::new(&mut r, 4.0, 0.5, n_half);
+    let reports = sim.render(&traj, &mut r);
+    let Some((centre_in, width_in)) = blind else {
+        return reports;
+    };
+    // Dead-reckon along the sweep axis and drop what falls in the band.
+    let mut x = 0.0f64;
+    let mut out = Vec::with_capacity(reports.len());
+    for rep in reports {
+        x += rep.dx as f64 / 1600.0;
+        if (x - centre_in).abs() <= width_in / 2.0 {
+            continue;
+        }
+        out.push(rep);
+    }
+    out
+}
+
+fn lod_cfg() -> lod::LodConfig {
+    // 6 mm slot, which is 0.236 in.
+    lod::LodConfig::new(1.0, 6.0, 1600.0)
+}
+
+#[test]
+fn lod_a_mouse_that_keeps_the_surface_is_not_called_a_lift_off() {
+    // The direction that matters most. The shuttle stops dead at both ends and
+    // the device sends nothing while it is stopped, so this capture is FULL of
+    // silences. Every one of them is a hand stopping, and not one may be
+    // reported as the sensor letting go.
+    let out = lod::analyze_lod(&shuttle(11, 30, None), &lod_cfg());
+    assert_eq!(
+        out.state,
+        lod::LodState::Tracked,
+        "clean sweep called {:?}: {}",
+        out.state,
+        out.note
+    );
+    assert_eq!(
+        out.n_crossings, 0,
+        "a turnaround was counted as a crossing {} time(s)",
+        out.n_crossings
+    );
+}
+
+#[test]
+fn lod_a_slot_the_sensor_cannot_see_is_found() {
+    let out = lod::analyze_lod(&shuttle(12, 30, Some((2.0, 0.236))), &lod_cfg());
+    assert_eq!(
+        out.state,
+        lod::LodState::Lost,
+        "a blind slot was not found: {}",
+        out.note
+    );
+    // And it should land where the slot actually is. The figure is the LEADING
+    // edge of the silence measured from the turn, so for a 6 mm slot centred
+    // 2 inches into a 4 inch sweep that is 50.8 - 3 = 47.8 mm, from either
+    // direction. Held tight, because a loose bound here would pass a detector
+    // that had merely noticed some silences somewhere.
+    assert!(
+        (out.slot_at_mm - 47.8).abs() < 4.0,
+        "slot located at {:.1} mm, expected about 47.8",
+        out.slot_at_mm
+    );
+    assert!(
+        out.slot_spread_mm < 3.0,
+        "a fixed slot should not wander: spread was {:.1} mm",
+        out.slot_spread_mm
+    );
+}
+
+#[test]
+fn lod_a_habit_of_pausing_is_not_a_lift_off() {
+    // Silences entered and left at full speed, so the edge checks cannot see
+    // anything wrong with them, but in a different place on every sweep. A slot
+    // does not move between sweeps. This is the case the clustering exists for,
+    // and without it a fidgety user would be reported as a mouse.
+    let sim = MouseSim { cpi: 1600.0, ..Default::default() };
+    let mut r = rng(13);
+    let traj = ShuttleTraj::new(&mut r, 4.0, 0.5, 30);
+    let reports = sim.render(&traj, &mut r);
+    let mut x = 0.0f64;
+    let mut stroke = 0usize;
+    let mut last_dir = 0i32;
+    let mut centre = 1.0f64;
+    let mut out_r = Vec::with_capacity(reports.len());
+    for rep in reports {
+        let dir = if rep.dx >= 0 { 1 } else { -1 };
+        if dir != last_dir {
+            last_dir = dir;
+            stroke += 1;
+            // Wander the pause all over the stroke, as a person would.
+            centre = 0.7 + 2.6 * ((stroke * 7919 % 100) as f64 / 100.0);
+        }
+        x += rep.dx as f64 / 1600.0;
+        if (x - centre).abs() <= 0.236 / 2.0 {
+            continue;
+        }
+        out_r.push(rep);
+    }
+    let out = lod::analyze_lod(&out_r, &lod_cfg());
+    assert_ne!(
+        out.state,
+        lod::LodState::Lost,
+        "wandering pauses were reported as a lift-off: {}",
+        out.note
+    );
+}
+
+#[test]
+fn lod_a_disconnection_is_refused_rather_than_measured() {
+    // The fault that produced this whole test. A mouse that drops off the bus
+    // mid-run must never come back as a lift-off distance.
+    let mut reports = shuttle(14, 30, None);
+    let cut = reports.len() / 2;
+    for rep in reports.iter_mut().skip(cut) {
+        rep.t_ns += 2_000_000_000;
+    }
+    let out = lod::analyze_lod(&reports, &lod_cfg());
+    assert_eq!(out.state, lod::LodState::Unknown);
+    assert!(
+        out.note.contains("disconnection"),
+        "wrong refusal for a disconnect: {}",
+        out.note
+    );
+}
+
+#[test]
+fn lod_too_little_sweeping_is_refused() {
+    let out = lod::analyze_lod(&shuttle(15, 4, None), &lod_cfg());
+    assert_eq!(out.state, lod::LodState::Unknown, "note was: {}", out.note);
+}
+
+#[test]
+fn lod_the_ladder_refuses_without_a_control_and_brackets_with_one() {
+    use lod::{summarize_lod, LodRung, LodState};
+    let rungs = [
+        LodRung { height_mm: 1.0, state: LodState::Tracked },
+        LodRung { height_mm: 2.0, state: LodState::Lost },
+    ];
+    let no_control = summarize_lod(&rungs, None);
+    assert_eq!(no_control.verdict, Verdict::Inconclusive);
+    assert!(no_control.note.contains("control"), "{}", no_control.note);
+
+    let with_control = [
+        LodRung { height_mm: 0.0, state: LodState::Tracked },
+        LodRung { height_mm: 1.0, state: LodState::Tracked },
+        LodRung { height_mm: 2.0, state: LodState::Lost },
+    ];
+    let s = summarize_lod(&with_control, None);
+    assert_eq!(s.verdict, Verdict::Pass, "{}", s.note);
+    assert_eq!(s.tracked_to_mm, 1.0);
+    assert_eq!(s.lost_at_mm, 2.0);
+    assert_eq!(s.bracket_mm, 1.0);
+}
+
+#[test]
+fn lod_a_ladder_that_contradicts_itself_is_refused() {
+    use lod::{summarize_lod, LodRung, LodState};
+    // A taller stack tracked than a shorter one did not: the rig moved.
+    let rungs = [
+        LodRung { height_mm: 0.0, state: LodState::Tracked },
+        LodRung { height_mm: 1.0, state: LodState::Lost },
+        LodRung { height_mm: 2.0, state: LodState::Tracked },
+    ];
+    let s = summarize_lod(&rungs, None);
+    assert_eq!(s.verdict, Verdict::Inconclusive);
+    assert!(s.note.contains("disagree"), "{}", s.note);
+}
