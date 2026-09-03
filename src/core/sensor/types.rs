@@ -1,6 +1,12 @@
 //! Core input types. NOTHING in the detector crate depends on any external crate;
 //! `rand`/`rand_distr` are used ONLY by the simulator/validation binary.
 
+// The full API of this module is kept, not just the part the interface reads
+// today. These are self-contained numerical routines checked as a whole against
+// an outside reference, and trimming them to the current call sites would make
+// that check harder to repeat than the unused functions are worth.
+#![allow(dead_code)]
+
 /// One HID mouse motion report, as captured by the platform backend.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Report {

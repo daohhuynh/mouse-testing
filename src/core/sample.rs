@@ -14,6 +14,7 @@
 /// guaranteed one-to-one with the wire.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
+#[cfg_attr(windows, allow(dead_code))]
 pub enum Kind {
     /// A whole input report. Authoritative for report rate.
     Report = 0,
@@ -79,6 +80,9 @@ pub struct Sample {
     pub flags: u32,
 }
 
+// The HID path builds these; Windows raw input arrives already decoded and
+// constructs its samples directly.
+#[cfg_attr(windows, allow(dead_code))]
 impl Sample {
     pub fn report(t: u64, device: u64, kernel_time: bool) -> Self {
         Sample {

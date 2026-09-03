@@ -57,6 +57,12 @@
 //! Only firmware can. We additionally refuse to judge strokes that are too slow or too
 //! short (Inconclusive, not Pass).
 
+// The full API of this module is kept, not just the part the interface reads
+// today. These are self-contained numerical routines checked as a whole against
+// an outside reference, and trimming them to the current call sites would make
+// that check harder to repeat than the unused functions are worth.
+#![allow(dead_code)]
+
 use super::seg::{bin_deltas, dominant_span, MotionGate};
 use super::types::{Report, Verdict, NS};
 use super::util::{highpass, mean, rms, stddev, tls_line};

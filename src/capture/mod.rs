@@ -9,7 +9,9 @@ use crate::core::clock;
 use crate::core::debounce::ButtonEvent;
 use crate::core::polling::{self, PollConfig, PollResult};
 use crate::core::ring::Consumer;
-use crate::core::sample::{Flags, Kind, Sample};
+#[cfg(target_os = "macos")]
+use crate::core::sample::{Flags, Kind};
+use crate::core::sample::Sample;
 use crate::platform::Tier;
 use std::time::Instant;
 
@@ -71,11 +73,13 @@ impl Series {
             .collect()
     }
 
-    /// The same series as scroll reports.
-    pub fn scroll(&self) -> Vec<crate::core::sensor::Report> {
-        self.times_ns
+    /// Scroll reports from `from` onward, so one run analyses only its own
+    /// wheel activity rather than everything since the capture started.
+    pub fn scroll_from(&self, from: usize) -> Vec<crate::core::sensor::Report> {
+        let from = from.min(self.times_ns.len());
+        self.times_ns[from..]
             .iter()
-            .zip(self.wheel.iter().zip(&self.hwheel))
+            .zip(self.wheel[from..].iter().zip(&self.hwheel[from..]))
             .map(|(&t, (&w, &h))| crate::core::sensor::Report {
                 t_ns: t,
                 dx: 0,
@@ -86,11 +90,12 @@ impl Series {
             .collect()
     }
 
-    /// The same series as motion reports for the sensor detectors.
-    pub fn motion(&self) -> Vec<crate::core::sensor::Report> {
-        self.times_ns
+    /// Motion reports from `from` onward, for the sensor detectors.
+    pub fn motion_from(&self, from: usize) -> Vec<crate::core::sensor::Report> {
+        let from = from.min(self.times_ns.len());
+        self.times_ns[from..]
             .iter()
-            .zip(self.dx.iter().zip(&self.dy))
+            .zip(self.dx[from..].iter().zip(&self.dy[from..]))
             .map(|(&t, (&x, &y))| crate::core::sensor::Report::motion(t, x, y))
             .collect()
     }
@@ -133,6 +138,11 @@ pub struct Session {
     pub system_state: LevelState,
     pub device_note: String,
     pub system_note: String,
+    /// Windows build number, supplied by the caller because the capture layer
+    /// does not enumerate the host. It selects the low-level hook's timeout
+    /// budget, which changed at build 16299, so a wrong value here would make
+    /// the app quote the wrong deadline for its own hook.
+    pub os_build: u32,
     /// Reports whose fields the descriptor parser could decode.
     pub decoded: u64,
     pub undecoded: u64,
@@ -142,14 +152,29 @@ pub struct Session {
     pub button_source: Option<Tier>,
     /// Last known absolute button state per device, for turning the state a HID
     /// report carries into the press and release edges the analysis needs.
+    /// Last known absolute button state per device. Only the HID path needs
+    /// this: a HID report carries the state of every button, so transitions
+    /// have to be derived, whereas Windows raw input reports the transitions
+    /// themselves.
+    #[cfg(target_os = "macos")]
     button_state: std::collections::BTreeMap<u64, u32>,
     /// Of the system level events, how many were bound for another
     /// application rather than this one.
     pub system_elsewhere: u64,
+    /// Events the capture saw while this application was NOT in the foreground.
+    /// A nonzero value is the proof that a mouse can be measured without being
+    /// the thing driving the interface. Windows only: the macOS system tier
+    /// already reports the same fact as `system_elsewhere`.
+    pub background_events: u64,
+    /// Events the operating system marked as synthesised by software rather
+    /// than produced by hardware. Any of these in a measurement window means
+    /// the numbers describe a program, not the mouse.
+    pub injected_events: u64,
     /// The OS's own count of system-wide motion events over this run. It needs
     /// no permission, so it is the control that distinguishes "nothing moved"
     /// from "this level is not working".
     pub control_motion: u64,
+    #[cfg(target_os = "macos")]
     control_origin: Option<u64>,
 
     #[cfg(target_os = "macos")]
@@ -207,13 +232,18 @@ impl Default for Session {
             system_state: LevelState::Idle,
             device_note: String::new(),
             system_note: String::new(),
+            os_build: 0,
             decoded: 0,
             undecoded: 0,
             system_elsewhere: 0,
+            background_events: 0,
+            injected_events: 0,
             buttons: Vec::new(),
             button_source: None,
+            #[cfg(target_os = "macos")]
             button_state: std::collections::BTreeMap::new(),
             control_motion: 0,
+            #[cfg(target_os = "macos")]
             control_origin: None,
             #[cfg(target_os = "macos")]
             hid: None,
@@ -258,9 +288,13 @@ impl Session {
         self.decoded = 0;
         self.undecoded = 0;
         self.control_motion = 0;
-        self.control_origin = None;
+        #[cfg(target_os = "macos")]
+        {
+            self.control_origin = None;
+        }
         self.buttons.clear();
         self.button_source = None;
+        #[cfg(target_os = "macos")]
         self.button_state.clear();
 
         match device_key {
@@ -315,12 +349,26 @@ impl Session {
         self.raw_consumer = raw.take_consumer();
         self.raw = Some(raw);
 
-        let build = 0;
-        let hook = HookCapture::start(1 << 16, build);
+        let hook = HookCapture::start(1 << 16, self.os_build);
         let hs = hook.status();
         if hs.installed {
             self.system_state = LevelState::Waiting;
-            self.system_note.clear();
+            // Not an error, but the user needs it: Windows silently REMOVES a
+            // low-level hook whose procedure overruns this budget, and the
+            // symptom is a system level that simply stops delivering rather
+            // than one that reports a failure.
+            self.system_note = format!(
+                "Windows will remove this hook without warning if its handler ever takes \
+                 longer than {} ms{}. The handler here only timestamps and enqueues, but \
+                 a heavily loaded machine can still overrun it, so watch for the system \
+                 level going quiet.",
+                hs.timeout_ms,
+                if hs.timeout_assumed {
+                    ", which is the default for this Windows build because no                      LowLevelHooksTimeout value is set"
+                } else {
+                    ", set by LowLevelHooksTimeout"
+                }
+            );
         } else {
             self.system_state = LevelState::Blocked;
             self.system_note = hs
@@ -482,6 +530,27 @@ impl Session {
 
     #[cfg(windows)]
     fn pump_windows(&mut self) {
+        if let Some(raw) = self.raw.as_ref() {
+            self.background_events = raw.background();
+            // Raw input delivers every mouse on one stream and the device
+            // filter picks one out of it. Without this, choosing the wrong
+            // device looks exactly like a mouse that is not reporting: the
+            // count is zero either way. `seen` is the count BEFORE filtering,
+            // so the two cases can be told apart and said out loud.
+            let seen = raw.seen();
+            if seen > 0 && self.device.total == 0 && self.filter_device.is_some() {
+                self.device_note = format!(
+                    "{seen} report(s) arrived, but none from the selected device. Another \
+                     pointing device is reporting instead. Pick the right one in DEVICE, \
+                     or move the mouse you mean to measure."
+                );
+            } else if self.device.total > 0 {
+                self.device_note.clear();
+            }
+        }
+        if let Some(hook) = self.hook.as_ref() {
+            self.injected_events = hook.injected();
+        }
         if let Some(mut consumer) = self.raw_consumer.take() {
             if let Some(ring) = self.raw.as_ref().map(|r| r.ring.clone()) {
                 let mut buf = std::mem::take(&mut self.scratch);
@@ -551,6 +620,7 @@ impl Session {
 
 
     /// Turns an absolute button state into press and release edges.
+    #[cfg(target_os = "macos")]
     fn push_button_edges(&mut self, device: u64, state: u32, t_ns: u64, source: Tier) {
         let prev = *self.button_state.get(&device).unwrap_or(&0);
         if prev == state {

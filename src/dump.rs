@@ -236,6 +236,20 @@ pub fn capture_report(app: &crate::app::App) -> String {
         "  system split   {} of {} events were bound for another application",
         s.system_elsewhere, s.system.total
     );
+    if s.background_events > 0 {
+        let _ = writeln!(
+            o,
+            "  background     {} event(s) arrived while this app was not in the foreground",
+            s.background_events
+        );
+    }
+    if s.injected_events > 0 {
+        let _ = writeln!(
+            o,
+            "  injected       {} event(s) were synthesised by software, not by hardware",
+            s.injected_events
+        );
+    }
 
     let _ = writeln!(o, "\n== buttons ==");
     let _ = writeln!(

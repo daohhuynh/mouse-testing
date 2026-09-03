@@ -80,6 +80,27 @@ pub fn render(app: &App, meta: &Meta) -> String {
     if !app.session.system_note.is_empty() {
         kv(&mut s, "system note", &app.session.system_note);
     }
+    if app.session.background_events > 0 {
+        kv(
+            &mut s,
+            "background events",
+            &format!(
+                "{} arrived while this app was not in the foreground",
+                app.session.background_events
+            ),
+        );
+    }
+    if app.session.injected_events > 0 {
+        kv(
+            &mut s,
+            "WARNING",
+            &format!(
+                "{} event(s) were synthesised by software rather than produced by the \
+                 mouse. Any measurement covering them describes that program.",
+                app.session.injected_events
+            ),
+        );
+    }
     kv(
         &mut s,
         "OS motion counter",

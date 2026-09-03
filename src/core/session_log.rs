@@ -224,7 +224,13 @@ impl SessionLog {
         Ok((log, skipped))
     }
 
-    /// The device level's motion, for re-running the sensor analysis.
+    /// Total path length in device counts, at one level.
+    pub fn counts(&self, level: Level) -> f64 {
+        self.motion(level).iter().map(|r| r.mag()).sum()
+    }
+
+    /// One level's motion, for re-running any of the sensor detectors over a
+    /// loaded capture.
     pub fn motion(&self, level: Level) -> Vec<crate::core::sensor::Report> {
         self.events
             .iter()

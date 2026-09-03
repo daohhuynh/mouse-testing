@@ -35,6 +35,12 @@
 //! log-linear, so we require BOTH tau < `max_human_tau_ms` AND a good log-linear fit
 //! (r2 >= 0.8) before calling a tail "exponential".
 
+// The full API of this module is kept, not just the part the interface reads
+// today. These are self-contained numerical routines checked as a whole against
+// an outside reference, and trimming them to the current call sites would make
+// that check harder to repeat than the unused functions are worth.
+#![allow(dead_code)]
+
 use super::seg::{dominant_span, MotionGate};
 use super::types::{Report, Verdict, NS};
 use super::util::{autocorr, band_power, highpass2, ols, percentile, welch_psd};

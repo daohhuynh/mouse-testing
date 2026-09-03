@@ -1,5 +1,11 @@
 //! Dependency-free statistics + a radix-2 FFT. Used by several detectors.
 
+// The full API of this module is kept, not just the part the interface reads
+// today. These are self-contained numerical routines checked as a whole against
+// an outside reference, and trimming them to the current call sites would make
+// that check harder to repeat than the unused functions are worth.
+#![allow(dead_code)]
+
 pub fn mean(v: &[f64]) -> f64 {
     if v.is_empty() { return 0.0; }
     v.iter().sum::<f64>() / v.len() as f64

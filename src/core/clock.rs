@@ -37,11 +37,16 @@ mod imp {
         (t as u128 * tb.numer as u128 / tb.denom as u128) as u64
     }
 
+    // Used by the macOS system tier, which gets a seconds-based timestamp from
+    // NSEvent and has to put it back on the same tick scale as the HID path,
+    // and by the self test's report. Neither exists on Windows.
+    #[allow(dead_code)]
     pub fn ns_to_ticks(ns: u64) -> u64 {
         let tb = timebase();
         (ns as u128 * tb.denom as u128 / tb.numer as u128) as u64
     }
 
+    #[allow(dead_code)]
     pub fn name() -> &'static str {
         "mach_absolute_time"
     }
@@ -80,11 +85,16 @@ mod imp {
         (t / f) * 1_000_000_000 + ((t % f) * 1_000_000_000) / f
     }
 
+    // Used by the macOS system tier, which gets a seconds-based timestamp from
+    // NSEvent and has to put it back on the same tick scale as the HID path,
+    // and by the self test's report. Neither exists on Windows.
+    #[allow(dead_code)]
     pub fn ns_to_ticks(ns: u64) -> u64 {
         let f = freq();
         (ns / 1_000_000_000) * f + ((ns % 1_000_000_000) * f) / 1_000_000_000
     }
 
+    #[allow(dead_code)]
     pub fn name() -> &'static str {
         "QueryPerformanceCounter"
     }
@@ -109,10 +119,15 @@ mod imp {
         t
     }
 
+    // Used by the macOS system tier, which gets a seconds-based timestamp from
+    // NSEvent and has to put it back on the same tick scale as the HID path,
+    // and by the self test's report. Neither exists on Windows.
+    #[allow(dead_code)]
     pub fn ns_to_ticks(ns: u64) -> u64 {
         ns
     }
 
+    #[allow(dead_code)]
     pub fn name() -> &'static str {
         "std::time::Instant"
     }

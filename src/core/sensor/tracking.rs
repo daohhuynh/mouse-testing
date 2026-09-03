@@ -28,6 +28,12 @@
 //!               Hand deceleration of a swipe takes tens of ms; a 5 ms collapse is the
 //!               sensor giving up, not the arm.
 
+// The full API of this module is kept, not just the part the interface reads
+// today. These are self-contained numerical routines checked as a whole against
+// an outside reference, and trimming them to the current call sites would make
+// that check harder to repeat than the unused functions are worth.
+#![allow(dead_code)]
+
 use super::seg::{motion_spans, MotionGate};
 use super::types::{Report, Verdict, NS};
 

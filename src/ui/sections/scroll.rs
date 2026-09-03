@@ -2,7 +2,6 @@
 
 use crate::app::{App, SensorPhase};
 use crate::core::sensor::scroll::ScrollResult;
-use crate::core::sensor::Verdict;
 use crate::ui::theme::Level;
 use crate::ui::widgets as w;
 
@@ -283,15 +282,4 @@ fn explanation(ui: &mut egui::Ui) {
              is not counted against the wheel.",
         );
     });
-}
-
-/// Overall state for the sidebar, so a fault is visible without opening this.
-pub fn worst(app: &App) -> Option<Verdict> {
-    let v = app.scroll.vertical.as_ref().map(|r| r.verdict);
-    let h = app.scroll.horizontal.as_ref().map(|r| r.verdict);
-    match (v, h) {
-        (Some(a), Some(b)) => Some(a.worst(b)),
-        (Some(a), None) | (None, Some(a)) => Some(a),
-        (None, None) => None,
-    }
 }

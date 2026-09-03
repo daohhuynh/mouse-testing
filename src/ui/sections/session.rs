@@ -53,6 +53,32 @@ fn current(app: &mut App, ui: &mut egui::Ui) {
             "",
             L::Info,
         );
+        if app.session.background_events > 0 {
+            w::readout(
+                ui,
+                "while not in front",
+                &format!("{}", app.session.background_events),
+                10,
+                "event(s)",
+                L::Pass,
+            );
+        }
+        if app.session.injected_events > 0 {
+            w::readout(
+                ui,
+                "synthesised by software",
+                &format!("{}", app.session.injected_events),
+                10,
+                "event(s)",
+                L::Fail,
+            );
+            w::note_indent(
+                ui,
+                14.0,
+                "These did not come from the mouse. Any measurement covering them \
+                 describes whatever program produced them.",
+            );
+        }
         let losses = app.session.device.ring_drops
             + app.session.system.ring_drops
             + app.session.app.ring_drops;
@@ -248,6 +274,14 @@ fn compare(app: &mut App, ui: &mut egui::Ui) {
             b.drop_rate * 100.0,
             4,
             "%",
+        );
+        row(
+            ui,
+            "motion recorded",
+            now.iter().map(|r| r.counts.max(0) as f64).sum(),
+            loaded.counts(level),
+            0,
+            "counts",
         );
         row(ui, "median interval", a.p50_ns / 1000.0, b.p50_ns / 1000.0, 1, "us");
         row(ui, "99th percentile", a.p99_ns / 1000.0, b.p99_ns / 1000.0, 1, "us");

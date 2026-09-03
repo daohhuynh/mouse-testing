@@ -14,6 +14,12 @@
 //! `scipy.stats` it is stated explicitly, because the verification harness compares
 //! against scipy 1.18.1 / numpy 2.5.2.
 
+// The full API of this module is kept, not just the part the interface reads
+// today. These are self-contained numerical routines checked as a whole against
+// an outside reference, and trimming them to the current call sites would make
+// that check harder to repeat than the unused functions are worth.
+#![allow(dead_code)]
+
 #![allow(clippy::needless_range_loop)]
 
 use std::f64::consts::PI;

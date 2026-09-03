@@ -62,12 +62,6 @@ pub enum Condition {
 }
 
 impl Condition {
-    pub fn other(self) -> Condition {
-        match self {
-            Condition::A => Condition::B,
-            Condition::B => Condition::A,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -147,14 +141,6 @@ pub struct Run {
 }
 
 impl Run {
-    pub fn values(&self, c: Condition) -> Vec<f64> {
-        self.trials
-            .iter()
-            .filter(|t| t.condition == c)
-            .map(|t| t.value)
-            .collect()
-    }
-
     /// Values paired by pair index, so the paired test compares like with like.
     pub fn paired(&self) -> (Vec<f64>, Vec<f64>) {
         let mut a = Vec::new();

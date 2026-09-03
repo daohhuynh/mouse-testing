@@ -187,7 +187,6 @@ pub struct SensorState {
     /// Reports the last capture actually collected, so a run that measured
     /// nothing can say so instead of showing an empty result.
     pub last_reports: usize,
-    pub last_export: Option<String>,
 }
 
 impl Default for SensorState {
@@ -208,7 +207,6 @@ impl Default for SensorState {
             smooth: None,
             tracking: None,
             last_reports: 0,
-            last_export: None,
         }
     }
 }
@@ -584,6 +582,7 @@ impl App {
     /// Begins one sensor test after the countdown.
     pub fn sensor_start(&mut self) {
         if !self.session.running() {
+            self.session.os_build = self.os_build_number();
             self.session.start(self.selected.as_deref());
         }
         self.sensor.baseline = self.session.device.times_ns.len();
@@ -615,13 +614,8 @@ impl App {
 
     /// Motion captured since the current run began.
     fn sensor_reports(&self) -> Vec<sensor::Report> {
-        let s = &self.session.device;
-        let from = self.sensor.baseline.min(s.times_ns.len());
-        s.times_ns[from..]
-            .iter()
-            .zip(s.dx[from..].iter().zip(&s.dy[from..]))
-            .map(|(&t, (&x, &y))| sensor::Report::motion(t, x, y))
-            .collect()
+        let from = self.sensor.baseline.min(self.session.device.times_ns.len());
+        self.session.device.motion_from(from)
     }
 
     fn tick_sensor(&mut self) {
@@ -957,6 +951,7 @@ impl App {
 
     pub fn scroll_start(&mut self) {
         if !self.session.running() {
+            self.session.os_build = self.os_build_number();
             self.session.start(self.selected.as_deref());
         }
         self.scroll.baseline = self.session.device.times_ns.len();
@@ -993,29 +988,14 @@ impl App {
             }
         }
 
-        let s = &self.session.device;
-        let from = self.scroll.baseline.min(s.times_ns.len());
-        let reports: Vec<sensor::Report> = s.times_ns[from..]
-            .iter()
-            .zip(s.wheel[from..].iter().zip(&s.hwheel[from..]))
-            .map(|(&t, (&w, &h))| sensor::Report {
-                t_ns: t,
-                dx: 0,
-                dy: 0,
-                wheel: w,
-                hwheel: h,
-            })
-            .collect();
+        let from = self.scroll.baseline.min(self.session.device.times_ns.len());
+        let reports = self.session.device.scroll_from(from);
         self.scroll.last_reports = reports
             .iter()
             .filter(|r| r.wheel != 0 || r.hwheel != 0)
             .count();
         let cfg = sensor::scroll::ScrollConfig::default();
-        self.scroll.vertical = Some(sensor::scroll::analyze_axis(
-            &reports,
-            sensor::scroll::Axis::Vertical,
-            &cfg,
-        ));
+        self.scroll.vertical = Some(sensor::scroll::analyze_scroll(&reports, &cfg));
         // Only reported when the wheel actually tilted. A device with no
         // horizontal encoder should not be shown an empty result for one.
         let any_h = reports.iter().any(|r| r.hwheel != 0);
@@ -1219,6 +1199,19 @@ impl App {
         }
     }
 
+    /// The Windows build number, parsed out of what the environment reported.
+    /// Zero everywhere else, and unused there.
+    fn os_build_number(&self) -> u32 {
+        self.survey
+            .env
+            .os_build
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|s| !s.is_empty())
+            .next_back()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    }
+
     /// Begins a capture, optionally after a delay.
     pub fn start_capture(&mut self, delay_s: f64) {
         if delay_s > 0.0 {
@@ -1226,6 +1219,7 @@ impl App {
         } else {
             self.countdown = None;
             let key = self.selected.clone();
+            self.session.os_build = self.os_build_number();
             self.session.start(key.as_deref());
             self.poll_result = PollResult::default();
         }
@@ -1284,7 +1278,8 @@ impl App {
             if start.elapsed().as_secs_f64() >= total {
                 self.countdown = None;
                 let key = self.selected.clone();
-                self.session.start(key.as_deref());
+                self.session.os_build = self.os_build_number();
+            self.session.start(key.as_deref());
                 self.poll_result = PollResult::default();
             }
         }

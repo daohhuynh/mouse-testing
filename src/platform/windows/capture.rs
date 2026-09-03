@@ -17,7 +17,7 @@ use std::cell::Cell;
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed, MaybeUninit};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;

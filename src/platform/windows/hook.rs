@@ -216,6 +216,11 @@ impl HookCapture {
         self.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
+    /// Events the hook procedure was handed, before anything this program does
+    /// with them. Retained as the counterpart to the raw-input counter of the
+    /// same name; the system level here has no device filter to lose events to,
+    /// so nothing currently needs to distinguish the two.
+    #[allow(dead_code)]
     pub fn seen(&self) -> u64 {
         self.shared.seen.load(Ordering::Relaxed)
     }
