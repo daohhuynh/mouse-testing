@@ -25,6 +25,12 @@ rustc -O scripts/icon.rs -o "$TMP/icon"
 mkdir -p assets
 iconutil -c icns "$TMP/AppIcon.iconset" -o "$OUT"
 
+# Windows has no bundle to carry an .icns, so the icon is compiled into the
+# binary there. Generated from the same geometry in the same run, so the two
+# cannot drift apart.
+"$TMP/icon" --rgba 128 assets/icon-128.rgba >/dev/null
+
 echo
 echo "wrote $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes)"
+echo "wrote assets/icon-128.rgba ($(wc -c < assets/icon-128.rgba | tr -d ' ') bytes, for Windows)"
 echo "run scripts/make-app-bundle.sh to put it into the app"

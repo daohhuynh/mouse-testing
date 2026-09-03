@@ -511,6 +511,25 @@ fn png(rgba: &[u8], size: usize) -> Vec<u8> {
 
 // ---------------------------------------------------------------- main
 
+/// A named variant renders one of the alternates instead of the shipped mark.
+/// Only used while choosing a design; the build never passes one.
+fn pick(name: Option<String>) -> &'static [Op] {
+    match name {
+        None => ICON,
+        Some(name) => match VARIANTS.iter().find(|v| v.0 == name) {
+            Some(v) => v.1,
+            None => {
+                eprintln!("no variant {name:?}");
+                eprintln!(
+                    "variants: {}",
+                    VARIANTS.iter().map(|v| v.0).collect::<Vec<_>>().join(" ")
+                );
+                std::process::exit(2);
+            }
+        },
+    }
+}
+
 /// The names iconutil expects. Both entries of a pair hold the same pixels;
 /// the difference is only which scale factor macOS believes it is looking at.
 const ICONSET: [(&str, usize); 10] = [
@@ -528,24 +547,40 @@ const ICONSET: [(&str, usize); 10] = [
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let dir = args.next().unwrap_or_else(|| {
+    let first = args.next().unwrap_or_else(|| {
+        eprintln!("usage: icon <output.iconset directory> [variant]");
+        eprintln!("       icon --rgba <size> <output file> [variant]");
+        std::process::exit(2);
+    });
+
+    // Raw RGBA, for Windows. There is no bundle there to carry an .icns, so the
+    // icon has to be compiled into the binary and handed to the window system
+    // at startup.
+    if first == "--rgba" {
+        let size: usize = args.next().and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+            eprintln!("--rgba needs a size");
+            std::process::exit(2);
+        });
+        let out = args.next().unwrap_or_else(|| {
+            eprintln!("--rgba needs an output path");
+            std::process::exit(2);
+        });
+        let ops = pick(args.next());
+        let master = render(ops, MASTER);
+        let buf = if size == MASTER { master } else { downsample(&master, MASTER, size) };
+        std::fs::File::create(&out)
+            .and_then(|mut f| f.write_all(&buf))
+            .expect("write rgba");
+        println!("{out}  {size}x{size}  {} bytes", buf.len());
+        return;
+    }
+
+    let dir = Some(first).unwrap_or_else(|| {
         eprintln!("usage: icon <output.iconset directory> [variant]");
         eprintln!("variants: {}", VARIANTS.iter().map(|v| v.0).collect::<Vec<_>>().join(" "));
         std::process::exit(2);
     });
-    // A named variant renders one of the alternates instead of the shipped
-    // mark. Only used while choosing a design; the build never passes one.
-    let ops: &[Op] = match args.next() {
-        None => ICON,
-        Some(name) => match VARIANTS.iter().find(|v| v.0 == name) {
-            Some(v) => v.1,
-            None => {
-                eprintln!("no variant {name:?}");
-                eprintln!("variants: {}", VARIANTS.iter().map(|v| v.0).collect::<Vec<_>>().join(" "));
-                std::process::exit(2);
-            }
-        },
-    };
+    let ops = pick(args.next());
     std::fs::create_dir_all(&dir).expect("create output directory");
 
     let master = render(ops, MASTER);

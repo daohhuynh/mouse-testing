@@ -157,6 +157,15 @@ closes and the pair reads as one long slot. The tile is rimmed in grey because a
 flat black tile has no edge at all on a dark desktop, and because the app's own
 interface draws exactly that rule around every group.
 
+eframe substitutes its own icon when the caller supplies none and pushes it onto
+the running application, which on macOS overrides the bundle icon: the Finder
+showed the real mark while the Dock and Command-Tab showed egui's hexagon. So
+the icon is set explicitly. macOS gets a deliberately EMPTY one, because eframe
+discards an icon equal to the default and then makes no call at all, leaving the
+bundle's ten separately rendered sizes in charge. Windows has no bundle to carry
+an `.icns`, so there a 128 px bitmap is compiled into the binary;
+`make-icon.sh` writes both from the same geometry in the same run.
+
 The tile matches Apple's own icon silhouette rather than approximating it.
 Measured against six system icons, the shape is 80.5% of the canvas on a
 0.0977 margin, and a superellipse exponent of 5.5 tracks their outline to within
