@@ -31,12 +31,9 @@ fn render(out: &mut String) {
     }
 
     let first = Survey::run(None);
-    let selected = first
-        .devices
-        .iter()
-        .find(|d| d.streamable)
-        .or_else(|| first.devices.first())
-        .map(|d| d.key.clone());
+    // The same rule the interface uses, so a dump attached to a bug report
+    // describes the device the app would actually have measured.
+    let selected = crate::app::default_device(&first.devices);
     let s = Survey::run(selected.as_deref());
 
     line!("== host ==");

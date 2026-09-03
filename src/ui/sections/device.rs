@@ -63,6 +63,13 @@ fn device_list(app: &mut App, ui: &mut egui::Ui) {
             if resp.clicked() {
                 app.selected = Some(d.key.clone());
                 app.refresh();
+                // Rebind a live capture straight away. It keeps streaming
+                // whatever it opened, so leaving it alone means every reading
+                // on screen still describes the device you just stopped
+                // choosing, and nothing says so.
+                if app.session.running() {
+                    app.restart_capture();
+                }
             }
         }
     });

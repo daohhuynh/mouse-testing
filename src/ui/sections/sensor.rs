@@ -253,15 +253,28 @@ fn recording(app: &mut App, ui: &mut egui::Ui) {
     w::subheading(ui, "recording");
     w::boxed(ui, |ui| {
         w::readout(ui, "time left", &format!("{left:.1}"), 8, "s", Level::Warn);
+        let seen = app.sensor_run_reports();
         w::readout(
             ui,
             "reports so far",
-            &format!("{}", app.session.device.times_ns.len()),
+            &format!("{seen}"),
             8,
             "",
-            Level::Info,
+            if seen > 0 { Level::Info } else { Level::Warn },
         );
+        w::readout(ui, "from", &app.recording_device_name(), 8, "", Level::Info);
         ui.add_space(2.0);
+        // Nothing arriving well into a run is almost always the wrong device
+        // rather than a broken one, and the section gave no way to tell.
+        if seen == 0 && left < app.sensor.test.capture_s() * 0.5 {
+            w::status_line(
+                ui,
+                Level::Warn,
+                "Nothing has arrived from that device. If the mouse you are moving is a \
+                 different one, pick it in DEVICE and start this run again.",
+            );
+            ui.add_space(2.0);
+        }
         w::note_indent(ui, 0.0, "Nothing is analysed until the capture finishes.");
     });
     ui.add_space(8.0);

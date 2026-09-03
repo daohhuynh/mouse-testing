@@ -174,6 +174,11 @@ pub struct Session {
     pub device_state: LevelState,
     pub system_state: LevelState,
     pub device_note: String,
+    /// The device this capture is actually bound to. Selecting a different one
+    /// changes only which device the app intends to measure; the capture keeps
+    /// streaming whatever it opened, so without this a new selection silently
+    /// measured the old device.
+    pub bound_key: Option<String>,
     /// The device was taken away mid-capture. Distinct from Blocked, which also
     /// covers a permission that no restart will fix. This one is recoverable:
     /// the capture is dead but a new one will find the device if it came back.
@@ -272,6 +277,7 @@ impl Default for Session {
             device_state: LevelState::Idle,
             system_state: LevelState::Idle,
             device_note: String::new(),
+            bound_key: None,
             device_removed: false,
             system_note: String::new(),
             os_build: 0,
@@ -323,6 +329,7 @@ impl Session {
     #[cfg(target_os = "macos")]
     pub fn start(&mut self, device_key: Option<&str>) {
         self.stop();
+        self.bound_key = device_key.map(str::to_string);
         self.device_removed = false;
         self.device.clear();
         self.system.clear();
@@ -370,6 +377,7 @@ impl Session {
     #[cfg(windows)]
     pub fn start(&mut self, device_key: Option<&str>) {
         self.stop();
+        self.bound_key = device_key.map(str::to_string);
         self.device_removed = false;
         self.device.clear();
         self.system.clear();

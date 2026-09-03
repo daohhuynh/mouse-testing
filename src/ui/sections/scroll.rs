@@ -110,6 +110,9 @@ fn recording(app: &mut App, ui: &mut egui::Ui) {
     w::subheading(ui, "recording");
     w::boxed(ui, |ui| {
         w::readout(ui, "time left", &format!("{left:.1}"), 8, "s", Level::Warn);
+        // Which device this is recording from, because a capture bound to the
+        // wrong one is indistinguishable from a wheel that sends nothing.
+        w::readout(ui, "from", &app.recording_device_name(), 8, "", Level::Info);
         w::note_indent(ui, 0.0, "Scroll up, then scroll down.");
     });
     ui.add_space(8.0);

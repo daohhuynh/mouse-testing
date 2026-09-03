@@ -66,6 +66,24 @@ impl Survey {
     }
 }
 
+/// Pick a device to measure when the user has not chosen one.
+///
+/// An attached mouse beats the machine's own trackpad every time. The first
+/// streamable device in enumeration order is the built-in one on every laptop,
+/// which is almost never what somebody opened a mouse tester to measure, and
+/// choosing it silently is worse than it sounds: a capture bound to the wrong
+/// device is indistinguishable from a mouse that has stopped sending. That is
+/// exactly what it was mistaken for.
+pub fn default_device(devices: &[platform::DeviceInfo]) -> Option<String> {
+    use platform::Link;
+    devices
+        .iter()
+        .find(|d| d.streamable && !matches!(d.topology.link, Link::Internal | Link::Virtual))
+        .or_else(|| devices.iter().find(|d| d.streamable))
+        .or_else(|| devices.first())
+        .map(|d| d.key.clone())
+}
+
 pub struct App {
     pub section: Section,
     pub screenshot: Option<crate::screenshot::Job>,
@@ -359,12 +377,7 @@ impl App {
         theme::apply(&cc.egui_ctx);
         let survey = Survey::run(None);
         // Default to the first device that can actually be streamed from.
-        let selected = survey
-            .devices
-            .iter()
-            .find(|d| d.streamable)
-            .or_else(|| survey.devices.first())
-            .map(|d| d.key.clone());
+        let selected = default_device(&survey.devices);
         let survey = Survey::run(selected.as_deref());
         App {
             section: Section::Device,
@@ -393,7 +406,7 @@ impl App {
             return;
         }
         self.claim_capture();
-        if !self.session.running() || self.session.device_removed {
+        if !self.session.running() || self.session.device_removed || !self.capture_matches_selection() {
             self.start_capture(0.0);
         }
         self.ab.trials.clear();
@@ -551,7 +564,7 @@ impl App {
         // A clicks-per-second run needs button events, so the capture has to be
         // live for it to count anything.
         self.claim_capture();
-        if !self.session.running() || self.session.device_removed {
+        if !self.session.running() || self.session.device_removed || !self.capture_matches_selection() {
             self.start_capture(0.0);
         }
         if delay_s > 0.0 {
@@ -610,7 +623,7 @@ impl App {
         // running forever and delivers nothing, so a run started on top of it
         // would record against a corpse. That is the failure this whole thread
         // of work began with.
-        if !self.session.running() || self.session.device_removed {
+        if !self.session.running() || self.session.device_removed || !self.capture_matches_selection() {
             self.session.os_build = self.os_build_number();
             self.session.start(self.selected.as_deref());
         }
@@ -640,6 +653,24 @@ impl App {
             Test::Tracking => self.sensor.tracking = None,
         }
         self.sensor.last_reports = 0;
+    }
+
+    /// Device reports this run has collected. The readout said "so far" while
+    /// showing the whole session's total, so a run collecting nothing behind a
+    /// healthy-looking number was unreadable.
+    pub fn sensor_run_reports(&self) -> usize {
+        self.session
+            .device
+            .times_ns
+            .len()
+            .saturating_sub(self.sensor.baseline)
+    }
+
+    /// The device a run is recording from, for sections that must say so.
+    pub fn recording_device_name(&self) -> String {
+        self.selected_device()
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| "no device selected".into())
     }
 
     /// Motion captured since the current run began.
@@ -992,7 +1023,7 @@ impl App {
 
     pub fn scroll_start(&mut self) {
         self.claim_capture();
-        if !self.session.running() || self.session.device_removed {
+        if !self.session.running() || self.session.device_removed || !self.capture_matches_selection() {
             self.session.os_build = self.os_build_number();
             self.session.start(self.selected.as_deref());
         }
@@ -1262,6 +1293,16 @@ impl App {
     }
 
     /// Begins a capture, optionally after a delay.
+    /// Whether the live capture is streaming the device the user has selected.
+    ///
+    /// Picking a different device in DEVICE only changes the intent. The
+    /// capture keeps whatever it opened, so a run started afterwards measured
+    /// the previous mouse and reported nothing when the new one was moved,
+    /// which is indistinguishable from a mouse that is not working.
+    fn capture_matches_selection(&self) -> bool {
+        self.session.bound_key == self.selected
+    }
+
     /// Throw away a dead capture and open a fresh one.
     ///
     /// Offered where the device level reports a removal, because that panel
@@ -1420,13 +1461,7 @@ impl App {
             .iter()
             .any(|d| Some(&d.key) == self.selected.as_ref())
         {
-            self.selected = self
-                .survey
-                .devices
-                .iter()
-                .find(|d| d.streamable)
-                .or_else(|| self.survey.devices.first())
-                .map(|d| d.key.clone());
+            self.selected = default_device(&self.survey.devices);
         }
     }
 
