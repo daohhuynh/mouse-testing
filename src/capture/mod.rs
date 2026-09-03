@@ -129,6 +129,34 @@ pub enum LevelState {
     Blocked,
 }
 
+/// What the device level's state should be after a pump.
+///
+/// `opened == 0` means "nothing could be opened" only once `running` says the
+/// capture thread has finished opening and published its result. The two are
+/// written under one lock, and the thread enumerates, opens and schedules every
+/// device before taking it, so for the whole of that window `opened` is 0 while
+/// nothing is wrong. Treating that as a failure latched the level to Blocked in
+/// the first frame after start, and because the recovery to Live fired only
+/// from Waiting, the run then collected thousands of reports at a clean 1 kHz
+/// underneath a red "blocked". SENSOR and SCROLL, which refuse to run when this
+/// state is Blocked, disabled themselves for the same reason.
+#[cfg(target_os = "macos")]
+fn device_state_after_pump(
+    prev: LevelState,
+    status_running: bool,
+    status_opened: usize,
+    total_reports: u64,
+) -> LevelState {
+    // A report is proof the device is open, whatever the status said earlier.
+    if total_reports > 0 {
+        return LevelState::Live;
+    }
+    if status_running && status_opened == 0 {
+        return LevelState::Blocked;
+    }
+    prev
+}
+
 pub struct Session {
     pub device: Series,
     pub system: Series,
@@ -450,23 +478,13 @@ impl Session {
             {
                 self.decoded = decoded;
                 self.undecoded = undecoded;
-                // `running` is required, not just `opened`. Both are written
-                // under one lock, and only after the capture thread has
-                // enumerated, opened and scheduled every device, so `opened`
-                // reads 0 for the whole of that window as well as when nothing
-                // could be opened. Reading it alone latched the level to
-                // Blocked in the first frame after start, and the promotion
-                // below fired only from Waiting, so the run then collected
-                // thousands of reports at a clean 1 kHz underneath a red
-                // "blocked" and the note "No matching device could be opened."
-                if status.running && status.opened == 0 {
-                    self.device_state = LevelState::Blocked;
-                    self.device_note = status
+                let refusal = || {
+                    status
                         .refused
                         .first()
                         .map(|(n, why)| format!("{n}: {why}"))
-                        .unwrap_or_else(|| "No matching device could be opened.".into());
-                }
+                        .unwrap_or_else(|| "No matching device could be opened.".into())
+                };
 
                 let mut buf = std::mem::take(&mut self.scratch);
                 buf.clear();
@@ -494,12 +512,24 @@ impl Session {
                     }
                 }
                 self.scratch = buf;
-                // A report is proof the device is open, so this clears a
-                // Blocked as well as a Waiting. Recovering only from Waiting
-                // made any spurious Blocked permanent for the run.
-                if self.device.total > 0 && self.device_state != LevelState::Live {
-                    self.device_state = LevelState::Live;
-                    self.device_note.clear();
+
+                // Decided after draining, so a report that arrived in this same
+                // pump counts as the proof it is.
+                let next = device_state_after_pump(
+                    self.device_state,
+                    status.running,
+                    status.opened,
+                    self.device.total,
+                );
+                if next != self.device_state {
+                    self.device_state = next;
+                    match next {
+                        LevelState::Blocked => self.device_note = refusal(),
+                        // A stale refusal would otherwise sit under a level
+                        // that is plainly working.
+                        LevelState::Live => self.device_note.clear(),
+                        _ => {}
+                    }
                 }
             }
             self.hid_consumer = Some(consumer);
@@ -739,5 +769,57 @@ impl Session {
             Tier::System => &self.system,
             Tier::App => &self.app,
         }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unpublished_status_is_not_a_failure_to_open() {
+        // The capture thread has not reported in yet, so `opened == 0` says
+        // nothing. Blocking here is what disabled a working device level, and
+        // took SENSOR and SCROLL down with it.
+        assert_eq!(
+            device_state_after_pump(LevelState::Waiting, false, 0, 0),
+            LevelState::Waiting
+        );
+    }
+
+    #[test]
+    fn a_thread_that_reported_opening_nothing_does_block() {
+        assert_eq!(
+            device_state_after_pump(LevelState::Waiting, true, 0, 0),
+            LevelState::Blocked
+        );
+    }
+
+    #[test]
+    fn a_report_clears_a_block_rather_than_being_counted_underneath_it() {
+        // The original recovery fired only from Waiting, so any Blocked reached
+        // during startup survived the whole run no matter what arrived.
+        assert_eq!(
+            device_state_after_pump(LevelState::Blocked, true, 0, 1),
+            LevelState::Live
+        );
+        assert_eq!(
+            device_state_after_pump(LevelState::Waiting, true, 1, 19_156),
+            LevelState::Live
+        );
+    }
+
+    #[test]
+    fn the_startup_window_resolves_to_live_once_reports_arrive() {
+        // The whole sequence a real run goes through, in order.
+        let mut st = LevelState::Waiting;
+        for _ in 0..5 {
+            st = device_state_after_pump(st, false, 0, 0); // thread still opening
+        }
+        assert_eq!(st, LevelState::Waiting);
+        st = device_state_after_pump(st, true, 1, 0); // published, opened one
+        assert_eq!(st, LevelState::Waiting);
+        st = device_state_after_pump(st, true, 1, 42); // reports arriving
+        assert_eq!(st, LevelState::Live);
     }
 }
