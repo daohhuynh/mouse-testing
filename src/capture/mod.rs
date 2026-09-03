@@ -140,9 +140,13 @@ pub enum LevelState {
 /// from Waiting, the run then collected thousands of reports at a clean 1 kHz
 /// underneath a red "blocked". SENSOR and SCROLL, which refuse to run when this
 /// state is Blocked, disabled themselves for the same reason.
-#[cfg(target_os = "macos")]
 fn device_state_after_pump(
     prev: LevelState,
+    // `status_running` is whether the backend has published the result of
+    // opening devices, which only macOS has to wait for; Windows decides
+    // registration once at start and passes true. `status_opened` is how many
+    // devices it opened, and Windows passes 1 because raw input is a single
+    // registration rather than a per-device open.
     status_running: bool,
     status_opened: usize,
     total_reports: u64,
@@ -659,8 +663,33 @@ impl Session {
                     self.push_button_transitions(s.buttons_down, s.buttons_up, t, Tier::Device);
                 }
                 self.scratch = buf;
-                if self.device.total > 0 && self.device_state == LevelState::Waiting {
-                    self.device_state = LevelState::Live;
+
+                // Same rule as macOS: a device Windows has taken away outranks
+                // the reports already counted, because none will follow them.
+                // Registration already asked for these notifications; nothing
+                // read them, so an unplugged mouse mid-run just went quiet.
+                //
+                // A removal counts against this level whenever the level was
+                // receiving anything, since raw input has no per-device filter
+                // in force (`filter_device` is never assigned), which makes the
+                // device level here the sum of every mouse rather than one.
+                let removed = self.raw.as_ref().map(|r| r.removed().0).unwrap_or(0);
+                let next = device_state_after_pump(
+                    self.device_state,
+                    true,
+                    1,
+                    if self.device.total > 0 { 1 } else { 0 },
+                    if self.device.total > 0 { removed } else { 0 },
+                );
+                if next != self.device_state {
+                    self.device_state = next;
+                    if next == LevelState::Blocked {
+                        self.device_removed = true;
+                        self.device_note = "A pointing device was unplugged or removed while \
+                             this capture was running. Raw input cannot resume for it, and a \
+                             device that comes back is a new one. Start a new run."
+                            .into();
+                    }
                 }
             }
             self.raw_consumer = Some(consumer);
@@ -811,7 +840,7 @@ impl Session {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

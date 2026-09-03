@@ -35,7 +35,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MSG, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_DOWN,
     RI_MOUSE_BUTTON_5_UP, RI_MOUSE_HWHEEL, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP,
     RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN,
-    RI_MOUSE_RIGHT_BUTTON_UP, RI_MOUSE_WHEEL, WM_APP, WM_INPUT, WNDCLASSEXW,
+    RI_MOUSE_RIGHT_BUTTON_UP, RI_MOUSE_WHEEL, WM_APP, WM_INPUT, WM_INPUT_DEVICE_CHANGE,
+    WNDCLASSEXW,
 };
 
 const WM_STOP_PUMP: u32 = WM_APP + 1;
@@ -59,9 +60,21 @@ const BUTTON_TABLE: [(u16, u32, bool); 10] = [
     (RI_MOUSE_BUTTON_5_UP as u16, 4, false),
 ];
 
+/// `GIDC_REMOVAL`, the wParam of WM_INPUT_DEVICE_CHANGE that says a device has
+/// gone. Spelled out rather than imported because windows-sys does not expose
+/// it under a stable path across versions.
+const GIDC_REMOVAL: usize = 2;
+
 pub struct Shared {
     pub ring: Arc<Ring<Sample>>,
     pub seen: AtomicU64,
+    /// Devices Windows told us went away mid-capture, with the handle of the
+    /// most recent one. Registration already asks for these notifications
+    /// (RIDEV_DEVNOTIFY, below); nothing was listening for them, so a mouse
+    /// unplugged mid-run simply stopped producing input and the app went on
+    /// reporting the silence as a mouse that was not being moved.
+    pub removed: AtomicU64,
+    pub removed_device: AtomicU64,
     /// Reports delivered while this application was not in the foreground,
     /// which is the evidence that background delivery is working.
     pub background: AtomicU64,
@@ -99,6 +112,17 @@ unsafe extern "system" fn wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == WM_INPUT_DEVICE_CHANGE {
+        if wparam == GIDC_REMOVAL {
+            let ctx = PUMP.with(|c| c.get());
+            if !ctx.is_null() {
+                let shared = &*ctx;
+                shared.removed_device.store(lparam as usize as u64, Ordering::Relaxed);
+                shared.removed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
     if msg == WM_INPUT {
         // Timestamped first: everything after this line is our own latency.
         // Windows attaches no timestamp to a raw input report, so this is the
@@ -255,6 +279,8 @@ impl RawInputCapture {
         let shared = Arc::new(Shared {
             ring: ring.clone(),
             seen: AtomicU64::new(0),
+            removed: AtomicU64::new(0),
+            removed_device: AtomicU64::new(0),
             background: AtomicU64::new(0),
             ambiguous_wheel: AtomicU32::new(0),
         });
@@ -289,6 +315,14 @@ impl RawInputCapture {
 
     pub fn take_consumer(&self) -> Option<Consumer> {
         self.ring.take_consumer()
+    }
+
+    /// (removals seen, handle of the most recent one).
+    pub fn removed(&self) -> (u64, u64) {
+        (
+            self.shared.removed.load(Ordering::Relaxed),
+            self.shared.removed_device.load(Ordering::Relaxed),
+        )
     }
 
     pub fn status(&self) -> Status {
