@@ -16,8 +16,20 @@
 # `xattr -dr com.apple.quarantine "/Applications/Mouse Testing.app"`.
 set -eu
 
+# --reset-permission clears the Input Monitoring grant even when the hash did
+# not change. The automatic path below only fires when this install replaces a
+# DIFFERENT build, which is the moment a grant dies. It cannot help someone who
+# is already stuck: their installed copy is the build being refused, so a
+# reinstall is byte-identical and there is nothing for the comparison to notice.
+FORCE_RESET=no
+if [ "${1:-}" = "--reset-permission" ]; then
+  FORCE_RESET=yes
+  shift
+fi
+
 cd "$(dirname "$0")/.."
 NAME="Mouse Testing"
+ID="dev.mousetesting.suite"
 SRC="target/$NAME.app"
 DEST="/Applications/$NAME.app"
 
@@ -38,9 +50,17 @@ running_from() {
   [ -n "$(lsof -t "$1/Contents/MacOS/mouse-testing" 2>/dev/null)" ]
 }
 
+# The ad-hoc signature's designated requirement is ONLY the code hash, so this
+# is the whole identity the Input Monitoring grant is pinned to.
+bundle_cdhash() {
+  codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p'
+}
+
 REPLACING=no
+OLD_HASH=""
 if [ -d "$DEST" ]; then
   REPLACING=yes
+  OLD_HASH=$(bundle_cdhash "$DEST")
   # A running app cannot be replaced cleanly, and the copy would half-succeed.
   if running_from "$DEST"; then
     echo "\"$NAME\" is running. Quit it first, then run this again." >&2
@@ -62,10 +82,45 @@ fi
 rm -rf "$DEST"
 ditto "$SRC" "$DEST"
 
+NEW_HASH=$(bundle_cdhash "$DEST")
+
 # Register the bundle so Spotlight and Launchpad see it without waiting for a
-# background scan.
+# background scan. This runs BEFORE the tccutil call below, deliberately:
+# tccutil takes a bundle identifier rather than a path and resolves it through
+# LaunchServices, and the bundle was just deleted and recreated underneath it.
+# Registering first costs nothing and removes the question.
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$DEST" >/dev/null 2>&1 || true
+
+# A changed code hash silently voids the Input Monitoring grant, and this is the
+# only moment anything knows it happened. The row in System Settings keeps its
+# switch in the ON position, because only the stored requirement stopped
+# matching and nothing revoked the authorisation, so the app is refused while
+# looking granted. That is unfalsifiable from the app's side: it sees a denial
+# identical to never having been granted at all.
+#
+# The stale row is worse than no row, so it is cleared here rather than
+# explained later. Nothing of value is destroyed: a grant whose hash no longer
+# matches is already dead, and removing it lets the app prompt again and makes
+# Settings honest. A grant that still matches is left alone, which is the whole
+# benefit of the build being deterministic.
+GRANT_VOIDED=no
+if [ "$FORCE_RESET" = yes ]; then
+  GRANT_VOIDED=forced
+elif [ "$REPLACING" = yes ]; then
+  if [ -z "$OLD_HASH" ] || [ -z "$NEW_HASH" ]; then
+    # Refuse to guess. An unsigned or unreadable bundle on either side means the
+    # comparison proves nothing, and silence here would be read as "checked, fine".
+    GRANT_VOIDED=unreadable
+  elif [ "$OLD_HASH" != "$NEW_HASH" ]; then
+    GRANT_VOIDED=yes
+  fi
+fi
+
+TCC_ERR=""
+if [ "$GRANT_VOIDED" = yes ] || [ "$GRANT_VOIDED" = forced ]; then
+  TCC_ERR=$(tccutil reset ListenEvent "$ID" 2>&1) || GRANT_VOIDED=failed
+fi
 
 # Leave exactly one bundle carrying this identifier. macOS registers every copy
 # under the same one, so a second one makes the Input Monitoring row ambiguous
@@ -99,6 +154,33 @@ fi
 
 echo
 echo "installed  $DEST"
+
+if [ "$GRANT_VOIDED" = yes ]; then
+  echo
+  echo "The code changed, so the code hash changed, and an ad-hoc signature has"
+  echo "nothing else to be identified by. Any Input Monitoring grant you had was"
+  echo "for the previous build and would have kept its switch ON while being"
+  echo "refused, so it has been cleared. Grant it again below."
+elif [ "$GRANT_VOIDED" = forced ]; then
+  echo
+  echo "Cleared the Input Monitoring grant because you asked for it."
+  echo "Grant it again below."
+elif [ "$GRANT_VOIDED" = failed ]; then
+  echo
+  echo "This build has a different code hash from the one it replaced, so an"
+  echo "existing Input Monitoring grant no longer matches it. Clearing that"
+  echo "grant failed, and its switch will look ON and do nothing until it goes."
+  echo "tccutil said:"
+  echo "    $TCC_ERR"
+  echo "Run this yourself, then grant it again:"
+  echo "    tccutil reset ListenEvent $ID"
+elif [ "$GRANT_VOIDED" = unreadable ]; then
+  echo
+  echo "Could not read the code hash of one of the bundles, so whether this"
+  echo "install invalidated an existing Input Monitoring grant is unknown. If"
+  echo "the switch is on and the app still reports no access, run:"
+  echo "    tccutil reset ListenEvent $ID"
+fi
 echo
 echo "Launch it from Launchpad, Spotlight, or the Applications folder."
 echo
@@ -119,8 +201,14 @@ echo
 echo "Rebuilding does NOT cost you the grant unless the code actually changed:"
 echo "the build and the signature are both deterministic, so an unchanged"
 echo "rebuild produces the same hash and the grant still matches. A real code"
-echo "change does invalidate it, and the repair is:"
-echo "  tccutil reset ListenEvent dev.mousetesting.suite"
+echo "change does invalidate it, and the switch stays ON while it does, so this"
+echo "script compares the two code hashes and clears the dead grant when it"
+echo "replaces a different build. It cannot notice anything when the installed"
+echo "copy is already this build, so if you are stuck with a switch that is on"
+echo "and refused, ask for it directly:"
+echo "  sh scripts/install.sh --reset-permission"
+echo "or clear it by hand with:"
+echo "  tccutil reset ListenEvent $ID"
 echo
 echo "Everything else works with no permission at all, and the app tells you"
 echo "which measurements are blocked rather than reporting them as zero."

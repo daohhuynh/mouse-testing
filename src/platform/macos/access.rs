@@ -27,6 +27,18 @@ System Settings > Privacy & Security > Input Monitoring, then switch on the app 
 that is running this program and QUIT AND REOPEN it. macOS does not apply the \
 grant to an already-running process.
 
+If the switch is ALREADY ON and this still says denied, the grant usually \
+belongs to an earlier build, or to another copy of the bundle if one is still \
+sitting under target/. An ad-hoc signature is identified by its code hash and nothing \
+else, so changing the code stops the stored requirement from matching, while \
+the switch stays on because nothing revoked the authorisation. It therefore \
+looks granted and is refused. Clear it and grant it again:
+
+    tccutil reset ListenEvent dev.mousetesting.suite
+
+Reinstalling with scripts/install.sh does that for you when it detects the \
+hash has changed.
+
 When you launch with `cargo run`, the grant attaches to the terminal or editor \
 that started it, not to the binary, and an unsigned binary's identity changes on \
 every rebuild. Build the app bundle (see README) to get a stable entry.";

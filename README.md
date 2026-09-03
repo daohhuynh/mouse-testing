@@ -158,11 +158,25 @@ is nothing for you to do.
    below), then **quit the app and open it again**. macOS does not apply the
    grant to a program that is already running.
 
-   Two things about that screen catch people out. The **system** line always
-   reads amber `[WARN]`. The app is written that way, and it is not a problem
-   with your machine. And a green **device** line only means the app could open
-   *some* mouse, not necessarily the one you picked, which is why step 3
-   matters.
+   If the switch is **already on** and the line is still red, the saved
+   permission belongs to an older build of the app. macOS identifies this app
+   by a hash of its code, so rebuilding it stops the saved permission matching,
+   and since nothing cancelled that permission the switch stays on and does
+   nothing. Clearing it is the whole fix, and the surest way is to ask for it:
+
+       sh scripts/install.sh --reset-permission
+
+   A plain reinstall does the same thing whenever it replaces a different
+   build, but it cannot help here, because the copy you have installed is the
+   build being refused and an unchanged rebuild has nothing to notice. Clearing
+   the permission removes the row, so afterwards reopen the app and press **ask
+   macOS now**, or add it again with **+** in Settings.
+
+   Two more things about that screen catch people out. The **system** line
+   always reads amber `[WARN]`. The app is written that way, and it is not a
+   problem with your machine. And a green **device** line only means the app
+   could open *some* mouse, not necessarily the one you picked, which is why
+   step 3 matters.
 
    On Windows there is no permission to grant and nothing to do here.
 6. Read "measurement validity" at the bottom. `Nothing detected that would
@@ -697,8 +711,26 @@ row ambiguous about which one it is describing.
 Rebuilding **does not** cost you the grant unless the code actually changed.
 Both the compile and the ad-hoc signing are deterministic: an unchanged rebuild
 reproduced the same binary hash and the same bundle `CDHash` here, so the stored
-requirement still matches. A real code change does invalidate it, and the repair
-is `tccutil reset ListenEvent dev.mousetesting.suite` followed by re-granting.
+requirement still matches.
+
+A real code change does invalidate it, and the failure is quiet in the worst
+way: **the switch in System Settings stays ON.** Nothing revoked the
+authorisation, so the row keeps its state; only the stored requirement stopped
+matching. The app is refused while looking granted, and the refusal is
+identical to never having been granted, so nothing on either side can tell you
+which one you are looking at. `scripts/install.sh` therefore compares the
+outgoing bundle's `CDHash` with the incoming one and clears the grant itself
+when they differ, since a grant pinned to a hash that no longer exists is
+already dead and the row that survives it only misleads. A grant that still
+matches is left alone, which is the point of the build being reproducible.
+
+That comparison cannot help anyone already stuck, though: their installed copy
+*is* the build being refused, so the reinstall is byte-identical and there is
+nothing to notice. For that case, and for a grant made against a bundle under
+`target/` before the first install, ask for the reset directly with
+`sh scripts/install.sh --reset-permission`, or run
+`tccutil reset ListenEvent dev.mousetesting.suite` by hand. Either removes the
+row, so re-granting means letting the app ask again or adding it with **+**.
 (Changing the toolchain version or moving the project directory also changes the
 hash, because debug info embeds absolute paths.)
 
