@@ -2,7 +2,7 @@ use crate::capture::Session;
 use crate::core::ab;
 use crate::core::cps;
 use crate::core::sensor;
-use crate::core::polling::{PollConfig, PollResult};
+use crate::core::polling::{verdict_settled, PollConfig, PollResult};
 use crate::platform::{self, AccessReport, DeviceInfo, HostEnv};
 use crate::ui::{sections, theme, widgets};
 use std::time::Instant;
@@ -74,6 +74,15 @@ pub struct App {
     pub session: Session,
     pub poll_result: PollResult,
     pub claimed_hz: String,
+    /// Stop a polling run by itself once more data cannot change the verdict.
+    pub poll_auto_stop: bool,
+    /// True only for a run the POLLING section started. The same capture backs
+    /// CLICKS, CPS and A/B, and ending one of those early would throw away the
+    /// run the user is actually in the middle of.
+    poll_armed: bool,
+    /// Set when a run ended on its own, so the section can say so rather than
+    /// leaving the user wondering who pressed stop.
+    pub poll_auto_stopped: bool,
     /// Set while a delayed start is pending, so the user can put this machine's
     /// own pointer down and pick up the mouse under test.
     countdown: Option<(Instant, f64)>,
@@ -355,6 +364,9 @@ impl App {
             session: Session::default(),
             poll_result: PollResult::default(),
             claimed_hz: String::new(),
+            poll_auto_stop: true,
+            poll_armed: false,
+            poll_auto_stopped: false,
             countdown: None,
             last_analysis: None,
             auto_capture: None,
@@ -1213,7 +1225,16 @@ impl App {
     }
 
     /// Begins a capture, optionally after a delay.
+    /// Start a run from the POLLING section, which is the only one allowed to
+    /// end early on its own.
+    pub fn start_poll_run(&mut self, delay_s: f64) {
+        self.start_capture(delay_s);
+        self.poll_armed = true;
+    }
+
     pub fn start_capture(&mut self, delay_s: f64) {
+        self.poll_armed = false;
+        self.poll_auto_stopped = false;
         if delay_s > 0.0 {
             self.countdown = Some((Instant::now(), delay_s));
         } else {
@@ -1279,7 +1300,7 @@ impl App {
                 self.countdown = None;
                 let key = self.selected.clone();
                 self.session.os_build = self.os_build_number();
-            self.session.start(key.as_deref());
+                self.session.start(key.as_deref());
                 self.poll_result = PollResult::default();
             }
         }
@@ -1298,8 +1319,23 @@ impl App {
             .map(|t| t.elapsed().as_millis() >= 200)
             .unwrap_or(true);
         if due && self.session.device.total > 0 {
-            self.poll_result = self.session.analyze_device(&PollConfig::default());
+            let cfg = PollConfig::default();
+            self.poll_result = self.session.analyze_device(&cfg);
             self.last_analysis = Some(Instant::now());
+
+            // End the run as soon as more swiping cannot move the answer. The
+            // test otherwise asks for effort it has no use for, and a person
+            // spinning a mouse for another twenty seconds is not producing
+            // information, only fatigue.
+            if self.poll_armed
+                && self.poll_auto_stop
+                && self.session.running()
+                && verdict_settled(&self.poll_result, &cfg)
+            {
+                self.session.stop();
+                self.poll_armed = false;
+                self.poll_auto_stopped = true;
+            }
         }
     }
 

@@ -133,6 +133,9 @@ pub struct PollResult {
     pub n_dropped_slots: usize,
     pub drop_rate: f64,
     pub slow_rate: f64,
+    /// Slots that had to carry a report: the denominator of both rates,
+    /// and the sample size any statement about them rests on.
+    pub expected_slots: f64,
     /// Judgeable reports per second of judgeable time.
     pub effective_hz: f64,
     pub p50_ns: f64,
@@ -149,6 +152,66 @@ impl Default for Verdict {
     fn default() -> Self {
         Verdict::Inconclusive
     }
+}
+
+/// 95% two-sided normal quantile.
+const Z_95: f64 = 1.959_963_984_540_054;
+
+/// Wilson score interval for a proportion.
+///
+/// Wilson rather than the textbook normal interval because both rates here sit
+/// at or very near zero on working hardware, and the normal interval has zero
+/// width at exactly zero. That would declare a run settled after a handful of
+/// reports, which is the opposite of what an early stop is for.
+pub fn wilson_bounds(hits: f64, n: f64, z: f64) -> (f64, f64) {
+    if n <= 0.0 {
+        return (0.0, 1.0);
+    }
+    let p = (hits / n).clamp(0.0, 1.0);
+    let z2 = z * z;
+    let denom = 1.0 + z2 / n;
+    let centre = (p + z2 / (2.0 * n)) / denom;
+    let half = (z / denom) * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
+    ((centre - half).max(0.0), (centre + half).min(1.0))
+}
+
+fn band(x: f64, warn: f64, fail: f64) -> u8 {
+    if x >= fail {
+        2
+    } else if x >= warn {
+        1
+    } else {
+        0
+    }
+}
+
+/// Whether more measuring could still change the verdict.
+///
+/// The question this section answers is not "what is the drop rate" but "which
+/// side of the thresholds is it on", and that can be settled long before the
+/// rate itself is known precisely. So a run is finished once the whole
+/// confidence interval for each rate lies inside one band: no continuation of
+/// it could cross a threshold, and swiping on is asking a question that is
+/// already answered.
+///
+/// It is deliberately conservative. It refuses while the analysis itself is
+/// refusing, so an early stop can never manufacture a verdict the section
+/// would not otherwise give, and a rate sitting on a threshold keeps the run
+/// going rather than freezing an arbitrary side of it.
+pub fn verdict_settled(r: &PollResult, cfg: &PollConfig) -> bool {
+    if r.n_analyzable < cfg.min_analyzable
+        || !r.nominal_reliable
+        || !r.multiple_classification_valid
+        || r.expected_slots <= 0.0
+    {
+        return false;
+    }
+    let pinned = |hits: f64, warn: f64, fail: f64| {
+        let (lo, hi) = wilson_bounds(hits, r.expected_slots, Z_95);
+        band(lo, warn, fail) == band(hi, warn, fail)
+    };
+    pinned(r.n_dropped_slots as f64, cfg.drop_warn, cfg.drop_fail)
+        && pinned(r.n_slow as f64, cfg.slow_warn, cfg.slow_fail)
 }
 
 pub const STANDARD_RATES_HZ: [f64; 9] = [
@@ -352,6 +415,7 @@ pub fn analyze(reports: &[Report], cfg: &PollConfig) -> PollResult {
         }
     }
 
+    out.expected_slots = expected_slots;
     out.drop_rate = if expected_slots > 0.0 {
         out.n_dropped_slots as f64 / expected_slots
     } else {
@@ -556,6 +620,93 @@ mod tests {
             );
             assert_eq!(r.verdict, Verdict::Pass, "{rate} Hz: {}", r.note);
         }
+    }
+
+    fn settled_fixture(dropped: usize, slow: usize, slots: f64, judged: usize) -> PollResult {
+        PollResult {
+            n_analyzable: judged,
+            nominal_reliable: true,
+            multiple_classification_valid: true,
+            expected_slots: slots,
+            n_dropped_slots: dropped,
+            n_slow: slow,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_clean_run_settles_only_once_the_interval_clears_the_threshold() {
+        let cfg = PollConfig::default();
+        // Nothing dropped or late, but too few slots for the interval to
+        // exclude the 0.1% warning line, so the answer is not yet pinned.
+        assert!(!verdict_settled(&settled_fixture(0, 0, 1_000.0, 1_000), &cfg));
+        // The same clean run, carried far enough that it is.
+        assert!(verdict_settled(&settled_fixture(0, 0, 20_000.0, 20_000), &cfg));
+    }
+
+    #[test]
+    fn an_early_stop_can_never_invent_a_verdict_the_section_would_refuse() {
+        let cfg = PollConfig::default();
+        let mut r = settled_fixture(0, 0, 20_000.0, 20_000);
+        assert!(verdict_settled(&r, &cfg));
+
+        // Every reason the analysis itself refuses must also stop the clock
+        // from stopping, or the run would end on a result that is not offered.
+        r.n_analyzable = cfg.min_analyzable - 1;
+        assert!(!verdict_settled(&r, &cfg));
+        r.n_analyzable = 20_000;
+        r.nominal_reliable = false;
+        assert!(!verdict_settled(&r, &cfg));
+        r.nominal_reliable = true;
+        r.multiple_classification_valid = false;
+        assert!(!verdict_settled(&r, &cfg));
+    }
+
+    #[test]
+    fn a_rate_sitting_on_a_threshold_keeps_the_run_going() {
+        let cfg = PollConfig::default();
+        // Exactly the warn line. The interval straddles it however long this
+        // runs, so it must never freeze an arbitrary side of the boundary.
+        let slots = 100_000.0;
+        let on_the_line = (slots * cfg.drop_warn) as usize;
+        assert!(!verdict_settled(
+            &settled_fixture(on_the_line, 0, slots, 100_000),
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn a_clearly_failing_run_settles_too_rather_than_swiping_forever() {
+        let cfg = PollConfig::default();
+        // 5% dropped is far above the 1% failure line: the answer is known,
+        // and a bad mouse should not cost more swiping than a good one.
+        assert!(verdict_settled(&settled_fixture(500, 0, 10_000.0, 10_000), &cfg));
+    }
+
+    #[test]
+    fn lateness_alone_can_hold_the_run_open() {
+        let cfg = PollConfig::default();
+        // Drops pinned at zero, but the late rate sits on its own warn line,
+        // so the combined verdict is still undecided.
+        let slots = 100_000.0;
+        let on_the_line = (slots * cfg.slow_warn) as usize;
+        assert!(!verdict_settled(
+            &settled_fixture(0, on_the_line, slots, 100_000),
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn wilson_upper_bound_shrinks_with_the_sample_and_never_leaves_zero_flat() {
+        // The whole point of Wilson here: at zero observed events the interval
+        // must still have width, or a one-second run would look conclusive.
+        let (lo, hi) = wilson_bounds(0.0, 100.0, Z_95);
+        // Exactly zero in algebra, a rounding crumb above it in floating point.
+        assert!(lo < 1e-12, "lo was {lo}");
+        assert!(hi > 0.03, "hi was {hi}");
+        let (_, hi_big) = wilson_bounds(0.0, 20_000.0, Z_95);
+        assert!(hi_big < 0.001, "hi was {hi_big}");
+        assert!(hi_big < hi);
     }
 
     #[test]

@@ -32,7 +32,7 @@ fn controls(app: &mut App, ui: &mut egui::Ui) {
                 app.session.stop();
             }
         } else if ui.button("start now").clicked() {
-            app.start_capture(0.0);
+            app.start_poll_run(0.0);
         }
 
         ui.add_space(10.0);
@@ -44,10 +44,34 @@ fn controls(app: &mut App, ui: &mut egui::Ui) {
                 .add_enabled(!running, egui::Button::new(format!("{secs:.0} s")))
                 .clicked()
             {
-                app.start_capture(secs);
+                app.start_poll_run(secs);
             }
         }
+
+        ui.add_space(10.0);
+        if w::chip(ui, app.poll_auto_stop, "stop when settled").clicked() {
+            app.poll_auto_stop = !app.poll_auto_stop;
+        }
     });
+
+    ui.add_space(2.0);
+    w::note_indent(
+        ui,
+        0.0,
+        "With \"stop when settled\" on, the run ends by itself once the confidence interval on \
+         both rates sits inside one verdict band, so more swiping could not change the answer. \
+         A rate sitting on a threshold keeps it going, and it never stops on a result this \
+         section would refuse to give.",
+    );
+
+    if app.poll_auto_stopped && !running {
+        ui.add_space(2.0);
+        w::status_line(
+            ui,
+            Level::Pass,
+            "Stopped on its own: the answer stopped moving, so more swiping could not change it.",
+        );
+    }
 
     if let Some(remaining) = app.countdown_remaining() {
         ui.add_space(2.0);

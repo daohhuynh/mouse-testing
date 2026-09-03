@@ -48,6 +48,17 @@ Dropped reports are distinguished from late ones by whether the gap is a clean
 multiple of the interval. You can enter the configured rate for a
 measured-against-claimed comparison.
 
+The run ends itself once the answer is pinned, rather than asking for a fixed
+duration. The question is which side of the thresholds each rate falls, not
+what the rate is to three places, and that is settled as soon as the whole
+Wilson interval for both rates sits inside one verdict band. The interval is
+Wilson rather than the textbook normal one precisely because both rates sit at
+or near zero on working hardware, where a normal interval has zero width and
+would call a one-second run conclusive. It refuses to stop on anything the
+section would refuse to report, so an early stop can never manufacture a
+verdict, and a rate sitting exactly on a threshold keeps the run going instead
+of freezing an arbitrary side of it.
+
 **CLICKS** counts presses and releases per button, reports mismatches, and
 detects contact bounce. Raw button identifiers are shown, so a button the OS
 does not map is still visible. Distributions of press duration and inter-click
@@ -338,12 +349,42 @@ picked. Neither operating system will tell the app the real setting.
 Then press **start now**, or a delayed start if you need both hands free, and
 **swipe the mouse hard and keep swiping**.
 
+Leave **stop when settled** switched on and the run ends by itself as soon as
+the answer stops moving, which on a clean 1000 Hz mouse is usually a few
+seconds of hard swiping rather than the twenty you might otherwise give it.
+It stops only when the confidence interval on both rates has landed inside a
+single verdict band, so nothing that could still change the answer is cut
+short. A rate sitting on a threshold keeps the run going, and it will never
+stop on a result the section would have refused to give. Switch it off if you
+want to swipe for a fixed time of your own choosing.
+
 Moving gently is the usual reason this test gives no answer. A mouse sends
 nothing when it has nothing to send, and a silent moment cannot be told apart
 from a lost report, so those moments are thrown away rather than counted
 against you. Keep going until "intervals judged" reaches 200 and turns green.
 An interval is the gap between one report and the next, so that number is
 counting usable gaps, not seconds. Below 200 the app gives no verdict at all.
+
+**Three boxes, and which one you want.** The section stacks three, and they
+answer different questions. This is the thing most people get tangled in.
+
+- **rate by level** counts events per second at each of the three levels, side
+  by side. Read it to compare device against system against app. It is a
+  counter, not an analysis, and it has no verdict of its own: the `[FAIL]` or
+  `[N/A ]` beside each row describes whether that level is *collecting*, not
+  whether your mouse is any good.
+- **measured against claimed** appears only once you type into "configured
+  rate". It is the direct answer to "is my mouse doing what I set it to". Its
+  **measured** figure is the device level's nominal rate and nothing else, so
+  it says nothing about what survives the operating system. Within 2% of what
+  you typed is a pass, up to 10% a warning, beyond that a failure.
+- **interval distribution, device level** is the real analysis, and it is where
+  the section's verdict lives. It only ever describes the **device** level.
+  Everything about dropped and late reports comes from here.
+
+So: your mouse's true rate is **nominal rate** in the third box, or equally
+**measured** in the second. What reaches an ordinary program is the **app** row
+of the first box, and the two are supposed to differ enormously.
 
 **What the results mean.**
 
@@ -366,13 +407,23 @@ If the drop rate is only just over the line, between 0.1% and 0.2%, the app
 says so. Good hardware wanders that much between runs and so does the app's own
 measuring, so run it again before concluding anything.
 
-**Three rows, and why they disagree.** The **device** row is your mouse. The
-**system** row is the sum of every pointing device you touch, so nudging the
-laptop trackpad shows up there. The **app** row usually looks far worse than
-the other two, and that is the correct answer rather than a fault: an ordinary
-program only receives pointer updates as fast as it redraws, and the operating
-system throws the rest away. It also counts only while the pointer is over this
+**The three rows, and why they disagree.** The **device** row is your mouse, as
+the operating system receives it. The **system** row is what the OS passes on,
+and it is the sum of every pointing device you touch, so nudging the laptop
+trackpad shows up there. The **app** row is what an ordinary program is handed,
+and it usually looks far worse than the other two. That is the correct answer
+rather than a fault: a program only receives pointer updates as fast as it
+redraws, the operating system keeps at most one pending move per application
+and discards the rest, and this row counts only while the pointer is over the
 app's own window. That gap is a large part of why this app exists.
+
+A system or app row far below the device row is therefore not evidence that
+anything is capping your mouse. It is the expected shape of the three levels,
+and it is why "my effective polling rate" has three different answers depending
+on who is asking. If you want to know what your mouse delivers, read the device
+level. If you want to know what a game receives, no measurement taken from
+outside that game can tell you, because the number depends on how often that
+program itself asks.
 
 The chart underneath has no numbers along its edges, and does not need them. It
 sorts the gaps between reports by size and shows you the shape, with marked

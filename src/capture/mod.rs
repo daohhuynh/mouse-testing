@@ -450,7 +450,16 @@ impl Session {
             {
                 self.decoded = decoded;
                 self.undecoded = undecoded;
-                if status.opened == 0 {
+                // `running` is required, not just `opened`. Both are written
+                // under one lock, and only after the capture thread has
+                // enumerated, opened and scheduled every device, so `opened`
+                // reads 0 for the whole of that window as well as when nothing
+                // could be opened. Reading it alone latched the level to
+                // Blocked in the first frame after start, and the promotion
+                // below fired only from Waiting, so the run then collected
+                // thousands of reports at a clean 1 kHz underneath a red
+                // "blocked" and the note "No matching device could be opened."
+                if status.running && status.opened == 0 {
                     self.device_state = LevelState::Blocked;
                     self.device_note = status
                         .refused
@@ -485,8 +494,12 @@ impl Session {
                     }
                 }
                 self.scratch = buf;
-                if self.device.total > 0 && self.device_state == LevelState::Waiting {
+                // A report is proof the device is open, so this clears a
+                // Blocked as well as a Waiting. Recovering only from Waiting
+                // made any spurious Blocked permanent for the run.
+                if self.device.total > 0 && self.device_state != LevelState::Live {
                     self.device_state = LevelState::Live;
+                    self.device_note.clear();
                 }
             }
             self.hid_consumer = Some(consumer);
