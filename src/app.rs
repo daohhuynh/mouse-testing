@@ -16,10 +16,11 @@ pub enum Section {
     Ab,
     Sensor,
     Scroll,
+    Session,
 }
 
 impl Section {
-    pub const ALL: [Section; 7] = [
+    pub const ALL: [Section; 8] = [
         Section::Device,
         Section::Polling,
         Section::Clicks,
@@ -27,6 +28,7 @@ impl Section {
         Section::Ab,
         Section::Sensor,
         Section::Scroll,
+        Section::Session,
     ];
 
     pub fn title(self) -> &'static str {
@@ -38,6 +40,7 @@ impl Section {
             Section::Ab => "A/B",
             Section::Sensor => "SENSOR",
             Section::Scroll => "SCROLL",
+            Section::Session => "SESSION",
         }
     }
 }
@@ -83,6 +86,35 @@ pub struct App {
     pub ab: AbState,
     pub sensor: SensorState,
     pub scroll: ScrollState,
+    pub data: SessionDataState,
+}
+
+/// Export and reload of session data.
+#[derive(Default)]
+pub struct SessionDataState {
+    /// Path typed by the user, or picked from the list of previous exports.
+    pub load_path: String,
+    /// A previously exported log, held alongside the live session for
+    /// comparison rather than replacing it.
+    pub loaded: Option<crate::core::session_log::SessionLog>,
+    pub loaded_from: String,
+    pub loaded_skipped: usize,
+    /// Which level the side-by-side comparison is showing. Set on load to
+    /// whichever level the loaded file actually has data at, because defaulting
+    /// to the device level shows a column of zeros for a capture taken when
+    /// only the system level was permitted, and zeros there mean "wrong level
+    /// selected" rather than "nothing happened".
+    pub compare_level: crate::core::session_log::Level,
+    /// What the last export did, shown verbatim including any error.
+    pub export_message: String,
+    pub export_bad: bool,
+    /// What the last load did. Separate from the export message because the two
+    /// appear under different headings, and showing a load result under
+    /// "export" reads as though the export produced it.
+    pub load_message: String,
+    pub load_bad: bool,
+    pub last_raw: Option<String>,
+    pub last_summary: Option<String>,
 }
 
 /// Scroll wheel capture. One capture feeds both encoders, because a person
@@ -332,6 +364,7 @@ impl App {
             ab: AbState::default(),
             sensor: SensorState::default(),
             scroll: ScrollState::default(),
+            data: SessionDataState::default(),
         }
     }
 
@@ -658,6 +691,268 @@ impl App {
         self.sensor.started = None;
     }
 
+    // ------------------------------------------------------------ session data
+
+    /// Everything about this run that is not an event.
+    pub fn log_meta(&self) -> crate::core::session_log::Meta {
+        use crate::core::session_log::Meta;
+        let dev = self.selected_device();
+        Meta {
+            device_name: dev.map(|d| d.name.clone()).unwrap_or_else(|| "none".into()),
+            device_ids: dev.map(|d| d.ids()).unwrap_or_default(),
+            transport: dev
+                .and_then(|d| d.transport.clone())
+                .unwrap_or_else(|| "unknown".into()),
+            os: format!("{} ({})", self.survey.env.os, self.survey.env.os_build),
+            arch: self.survey.env.arch.clone(),
+            cpu: self.survey.env.cpu.clone(),
+            clock: self.survey.env.timer.name.clone(),
+            clock_resolution_ns: self.survey.env.timer.resolution_ns,
+            clock_cost_ns: self.survey.env.timer.cost_ns,
+            claimed_hz: self.claimed_hz.clone(),
+            claimed_cpi: self.sensor.claimed_cpi.clone(),
+            warnings: self
+                .survey
+                .env
+                .warnings
+                .iter()
+                .map(|w| format!("{}: {}", w.title, w.detail))
+                .collect(),
+            duration_s: self.session.elapsed_s(),
+        }
+    }
+
+    /// Every captured event, in one list, ordered by time.
+    pub fn session_log(&self) -> crate::core::session_log::SessionLog {
+        use crate::core::session_log::{Event, Level, SessionLog};
+        let mut events: Vec<Event> = Vec::with_capacity(
+            self.session.device.times_ns.len()
+                + self.session.system.times_ns.len()
+                + self.session.app.times_ns.len()
+                + self.session.buttons.len(),
+        );
+        for (level, series) in [
+            (Level::Device, &self.session.device),
+            (Level::System, &self.session.system),
+            (Level::App, &self.session.app),
+        ] {
+            for i in 0..series.times_ns.len() {
+                events.push(Event {
+                    t_ns: series.times_ns[i],
+                    level,
+                    // The app level has no per-axis motion to record; it counts
+                    // frames a normal program was handed, not device counts.
+                    dx: series.dx.get(i).copied().unwrap_or(0),
+                    dy: series.dy.get(i).copied().unwrap_or(0),
+                    wheel: series.wheel.get(i).copied().unwrap_or(0),
+                    hwheel: series.hwheel.get(i).copied().unwrap_or(0),
+                    button: 0,
+                    down: false,
+                    is_button: false,
+                });
+            }
+        }
+        let button_level = match self.session.button_source {
+            Some(platform::Tier::System) => Level::System,
+            _ => Level::Device,
+        };
+        for b in &self.session.buttons {
+            events.push(Event {
+                t_ns: b.t_ns,
+                level: button_level,
+                dx: 0,
+                dy: 0,
+                wheel: 0,
+                hwheel: 0,
+                button: b.button,
+                down: b.down,
+                is_button: true,
+            });
+        }
+        // Sorted by time, because the file is meant to read as one session
+        // rather than three concatenated ones. The sort is stable, so events
+        // sharing a timestamp keep the order they were captured in.
+        events.sort_by_key(|e| e.t_ns);
+        SessionLog {
+            meta: self.log_meta(),
+            events,
+        }
+    }
+
+    /// Writes the raw event log and the readable summary side by side.
+    pub fn export_session(&mut self) {
+        let log = self.session_log();
+        self.export_log(&log);
+    }
+
+    /// Writes a log that has already been built. Separate from
+    /// `export_session` so a caller that needs to keep the exact bytes it
+    /// exported, such as the round-trip check, can do so: rebuilding the log
+    /// afterwards would pick up a later duration and compare unequal for a
+    /// reason that has nothing to do with the file format.
+    pub fn export_log(&mut self, log: &crate::core::session_log::SessionLog) {
+        use crate::core::export;
+        let stamp = export::stamp();
+        let n = log.events.len();
+        let raw = export::path_for("session", &stamp, "csv");
+        let sum = export::path_for("summary", &stamp, "txt");
+        let text = crate::core::summary::render(self, &log.meta);
+        match export::write(&raw, &log.to_csv()).and_then(|_| export::write(&sum, &text)) {
+            Ok(()) => {
+                self.data.last_raw = Some(raw.display().to_string());
+                self.data.last_summary = Some(sum.display().to_string());
+                self.data.export_message = format!("Wrote {n} event(s) and a summary.");
+                self.data.export_bad = false;
+            }
+            Err(e) => {
+                self.data.export_message = format!("Could not write the export: {e}");
+                self.data.export_bad = true;
+            }
+        }
+    }
+
+    /// Reads a previous export back, keeping the live session intact.
+    pub fn load_session(&mut self, path: &str) {
+        use crate::core::session_log::SessionLog;
+        let path = path.trim();
+        if path.is_empty() {
+            self.data.load_message = "Give the path of a previously exported .csv file.".into();
+            self.data.load_bad = true;
+            return;
+        }
+        match std::fs::read_to_string(path) {
+            Err(e) => {
+                self.data.load_message = format!("Could not read {path}: {e}");
+                self.data.load_bad = true;
+            }
+            Ok(text) => match SessionLog::from_csv(&text) {
+                Err(e) => {
+                    self.data.load_message = format!("Could not load {path}: {e}");
+                    self.data.load_bad = true;
+                    self.data.loaded = None;
+                }
+                Ok((log, skipped)) => {
+                    use crate::core::session_log::Level;
+                    self.data.compare_level = [Level::Device, Level::System, Level::App]
+                        .into_iter()
+                        .max_by_key(|l| log.count(*l))
+                        .unwrap_or(Level::Device);
+                    self.data.load_message = format!(
+                        "Loaded {} event(s){}.",
+                        log.events.len(),
+                        if skipped > 0 {
+                            format!(", skipping {skipped} unreadable row(s)")
+                        } else {
+                            String::new()
+                        }
+                    );
+                    self.data.load_bad = skipped > 0;
+                    self.data.loaded_skipped = skipped;
+                    self.data.loaded_from = path.to_string();
+                    self.data.loaded = Some(log);
+                }
+            },
+        }
+    }
+
+    /// Export the live session, read it straight back, and report whether the
+    /// two agree. Used by the unattended capture test, so the file format is
+    /// checked against real captured events rather than only against the
+    /// synthetic ones in the unit tests.
+    pub fn verify_round_trip(&mut self) -> String {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        let _ = writeln!(s, "\n== session export round trip ==");
+        let before = self.session_log();
+        self.export_log(&before);
+        let Some(path) = self.data.last_raw.clone() else {
+            let _ = writeln!(s, "  export failed: {}", self.data.export_message);
+            return s;
+        };
+        self.load_session(&path);
+        let Some(after) = self.data.loaded.clone() else {
+            let _ = writeln!(s, "  reload failed: {}", self.data.load_message);
+            return s;
+        };
+        let _ = writeln!(s, "  file           {path}");
+        let _ = writeln!(
+            s,
+            "  events         {} written, {} read back, {} unreadable",
+            before.events.len(),
+            after.events.len(),
+            self.data.loaded_skipped
+        );
+        let _ = writeln!(
+            s,
+            "  metadata       {}",
+            if before.meta == after.meta {
+                "identical"
+            } else {
+                "CHANGED across the round trip"
+            }
+        );
+        let _ = writeln!(
+            s,
+            "  events match   {}",
+            if before.events == after.events {
+                "identical"
+            } else {
+                "CHANGED across the round trip"
+            }
+        );
+        for level in [
+            crate::core::session_log::Level::Device,
+            crate::core::session_log::Level::System,
+            crate::core::session_log::Level::App,
+        ] {
+            let _ = writeln!(
+                s,
+                "  {:<8}       {} written, {} read back",
+                level.as_str(),
+                before.count(level),
+                after.count(level)
+            );
+        }
+        let cfg = PollConfig::default();
+        let a = crate::core::polling::analyze(
+            &before.reports(crate::core::session_log::Level::System),
+            &cfg,
+        );
+        let b = crate::core::polling::analyze(
+            &after.reports(crate::core::session_log::Level::System),
+            &cfg,
+        );
+        let _ = writeln!(
+            s,
+            "  re-analysis    system level sustained {:.4} Hz before, {:.4} Hz after reload",
+            a.effective_hz, b.effective_hz
+        );
+        if let Some(p) = &self.data.last_summary {
+            let _ = writeln!(s, "  summary        {p}");
+        }
+        s
+    }
+
+    /// Previously exported logs, newest first.
+    pub fn previous_exports(&self) -> Vec<std::path::PathBuf> {
+        let mut out: Vec<std::path::PathBuf> = std::fs::read_dir(crate::core::export::dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().and_then(|e| e.to_str()) == Some("csv")
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("session-"))
+            })
+            .collect();
+        // The stamp is seconds since the epoch, so the name sorts by time.
+        out.sort();
+        out.reverse();
+        out
+    }
+
     // ------------------------------------------------------------ scroll
 
     pub fn scroll_start(&mut self) {
@@ -962,7 +1257,12 @@ impl App {
             }
             Some(t) if t.elapsed().as_secs_f64() >= seconds => {
                 self.poll_result = self.session.analyze_device(&PollConfig::default());
-                let report = crate::dump::capture_report(self);
+                // Exercise the export and reload path against a real capture,
+                // and append what it found. A round trip that only ever runs on
+                // synthetic events has not been shown to work on real ones.
+                let round_trip = self.verify_round_trip();
+                let mut report = crate::dump::capture_report(self);
+                report.push_str(&round_trip);
                 if let Err(e) = std::fs::write(&out, report) {
                     eprintln!("could not write {out}: {e}");
                 } else {
@@ -1135,6 +1435,7 @@ impl eframe::App for App {
                         Section::Ab => sections::ab::show(self, ui),
                         Section::Sensor => sections::sensor::show(self, ui),
                         Section::Scroll => sections::scroll::show(self, ui),
+                        Section::Session => sections::session::show(self, ui),
                     });
             });
     }

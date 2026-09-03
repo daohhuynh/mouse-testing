@@ -297,7 +297,7 @@ fn cpi_result(app: &mut App, ui: &mut egui::Ui) {
             w::readout(
                 ui,
                 "measured",
-                &format!("{:.1}", sum.median_cpi),
+                &w::num(sum.median_cpi, 1),
                 10,
                 "CPI",
                 sum.verdict.level(),
@@ -306,7 +306,7 @@ fn cpi_result(app: &mut App, ui: &mut egui::Ui) {
             w::readout(
                 ui,
                 "difference",
-                &format!("{:+.2}", sum.deviation * 100.0),
+                &w::signed(sum.deviation * 100.0, 2),
                 10,
                 "%",
                 Level::Info,
@@ -315,7 +315,7 @@ fn cpi_result(app: &mut App, ui: &mut egui::Ui) {
                 w::readout(
                     ui,
                     "spread across swipes",
-                    &format!("{:.1}", sum.se_cpi),
+                    &w::num(sum.se_cpi, 1),
                     10,
                     "CPI",
                     Level::Info,
@@ -366,11 +366,7 @@ fn cpi_result(app: &mut App, ui: &mut egui::Ui) {
                 w::fixed_label(ui, &format!("{}", i + 1), 4, Level::Off);
                 w::fixed_value(
                     ui,
-                    &if t.measured_cpi.is_finite() {
-                        format!("{:.0}", t.measured_cpi)
-                    } else {
-                        "-".into()
-                    },
+                    &w::num(t.measured_cpi, 0),
                     12,
                     t.verdict.level(),
                 );
@@ -379,23 +375,19 @@ fn cpi_result(app: &mut App, ui: &mut egui::Ui) {
                     &if t.deviation.is_finite() {
                         format!("{:+.2}%", t.deviation * 100.0)
                     } else {
-                        "-".into()
+                        "-".to_string()
                     },
                     12,
                     Level::Info,
                 );
-                w::fixed_value(ui, &format!("{:.0}", t.l_net), 10, Level::Info);
+                w::fixed_value(ui, &w::num(t.l_net, 0), 10, Level::Info);
                 w::fixed_value(
                     ui,
-                    &if t.wobble.is_finite() {
-                        format!("{:.3}", t.wobble)
-                    } else {
-                        "-".into()
-                    },
+                    &w::num(t.wobble, 3),
                     9,
                     Level::Info,
                 );
-                w::fixed_value(ui, &format!("{:.0} IPS", t.peak_ips), 10, Level::Info);
+                w::fixed_value(ui, &format!("{} IPS", w::num(t.peak_ips, 0)), 10, Level::Info);
             });
             if !t.note.is_empty() {
                 w::note_indent(ui, 14.0, t.note);
@@ -427,7 +419,7 @@ fn drift_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "drift",
-            &format!("{:.2}", r.drift_cps),
+            &w::num(r.drift_cps, 2),
             10,
             "counts/s",
             if r.drift_detected { Level::Fail } else { Level::Pass },
@@ -435,7 +427,7 @@ fn drift_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "drift",
-            &format!("{:.4}", r.drift_ips),
+            &w::num(r.drift_ips, 4),
             10,
             "inches/s",
             Level::Info,
@@ -443,7 +435,7 @@ fn drift_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "jitter",
-            &format!("{:.2}", r.jitter_cps),
+            &w::num(r.jitter_cps, 2),
             10,
             "counts/s",
             if r.jitter_detected {
@@ -463,7 +455,7 @@ fn drift_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "capture length",
-            &format!("{:.1}", r.duration_s),
+            &w::num(r.duration_s, 1),
             10,
             "s",
             Level::Info,
@@ -492,11 +484,11 @@ fn drift_result(app: &mut App, ui: &mut egui::Ui) {
         for (name, a) in [("x", &r.x), ("y", &r.y)] {
             ui.horizontal(|ui| {
                 w::fixed_label(ui, name, 8, Level::Off);
-                w::fixed_value(ui, &format!("{:+.0}", a.net), 10, Level::Info);
-                w::fixed_value(ui, &format!("{:.0}", a.abs_sum), 10, Level::Info);
+                w::fixed_value(ui, &w::signed(a.net, 0), 10, Level::Info);
+                w::fixed_value(ui, &w::num(a.abs_sum, 0), 10, Level::Info);
                 w::fixed_value(
                     ui,
-                    &format!("{:+.2}", a.z_mean),
+                    &w::signed(a.z_mean, 2),
                     10,
                     if a.z_mean.abs() > 3.0 {
                         Level::Fail
@@ -504,7 +496,7 @@ fn drift_result(app: &mut App, ui: &mut egui::Ui) {
                         Level::Info
                     },
                 );
-                w::fixed_value(ui, &format!("{:+.2}", a.z_sign), 10, Level::Info);
+                w::fixed_value(ui, &w::signed(a.z_sign, 2), 10, Level::Info);
             });
         }
         ui.add_space(2.0);
@@ -537,7 +529,7 @@ fn snap_result(app: &mut App, ui: &mut egui::Ui) {
             w::readout(
                 ui,
                 "across/along noise",
-                &format!("{:.3}", r.hf_aniso),
+                &w::num(r.hf_aniso, 3),
                 10,
                 "",
                 if r.hf_aniso < 0.55 {
@@ -559,7 +551,7 @@ fn snap_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "sensor noise along stroke",
-            &format!("{:.2}", r.hf_along_rms),
+            &w::num(r.hf_along_rms, 2),
             10,
             "counts",
             Level::Info,
@@ -567,7 +559,7 @@ fn snap_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "straightness",
-            &format!("{:.5}", r.straightness),
+            &w::num(r.straightness, 5),
             10,
             "",
             Level::Info,
@@ -575,7 +567,7 @@ fn snap_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "axis lock beyond normal",
-            &format!("{:+.3}", r.axis_lock_excess),
+            &w::signed(r.axis_lock_excess, 3),
             10,
             "",
             Level::Info,
@@ -583,16 +575,16 @@ fn snap_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "angle on 45 degrees",
-            &format!("{:.3}", r.angle_on_octant_frac),
+            &w::num(r.angle_on_octant_frac, 3),
             10,
             "",
             Level::Info,
         );
-        w::readout(ui, "travel", &format!("{:.2}", r.travel_in), 10, "inches", Level::Info);
+        w::readout(ui, "travel", &w::num(r.travel_in, 2), 10, "inches", Level::Info);
         w::readout(
             ui,
             "speed",
-            &format!("{:.1}", r.median_ips),
+            &w::num(r.median_ips, 1),
             10,
             "inches/s",
             Level::Info,
@@ -647,7 +639,7 @@ fn smooth_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "motion after the stop",
-            &format!("{:.2}", r.tail_ms),
+            &w::num(r.tail_ms, 2),
             10,
             "ms",
             if r.tail_ms >= 8.0 {
@@ -669,7 +661,7 @@ fn smooth_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "high-frequency correlation",
-            &format!("{:+.3}", r.rho1_corrected),
+            &w::signed(r.rho1_corrected, 3),
             10,
             "",
             if r.rho1_corrected > 0.35 {
@@ -684,7 +676,7 @@ fn smooth_result(app: &mut App, ui: &mut egui::Ui) {
             w::readout(
                 ui,
                 "filter time constant",
-                &format!("{:.2}", r.decay_tau_ms),
+                &w::num(r.decay_tau_ms, 2),
                 10,
                 "ms",
                 Level::Warn,
@@ -692,7 +684,7 @@ fn smooth_result(app: &mut App, ui: &mut egui::Ui) {
             w::readout(
                 ui,
                 "fit quality",
-                &format!("{:.3}", r.decay_r2),
+                &w::num(r.decay_r2, 3),
                 10,
                 "",
                 Level::Info,
@@ -701,7 +693,7 @@ fn smooth_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "report rate in stroke",
-            &format!("{:.0}", r.report_rate_hz),
+            &w::num(r.report_rate_hz, 0),
             10,
             "Hz",
             Level::Info,
@@ -709,7 +701,7 @@ fn smooth_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "speed",
-            &format!("{:.1}", r.median_counts_per_report),
+            &w::num(r.median_counts_per_report, 1),
             10,
             "counts/report",
             Level::Info,
@@ -768,7 +760,7 @@ fn tracking_result(app: &mut App, ui: &mut egui::Ui) {
             w::readout(
                 ui,
                 "tracked at least",
-                &format!("{:.0}", r.max_tracking_ips),
+                &w::num(r.max_tracking_ips, 0),
                 10,
                 "inches/s",
                 Level::Pass,
@@ -783,7 +775,7 @@ fn tracking_result(app: &mut App, ui: &mut egui::Ui) {
             w::readout(
                 ui,
                 "tracking failed above",
-                &format!("{:.0}", r.max_tracking_ips),
+                &w::num(r.max_tracking_ips, 0),
                 10,
                 "inches/s",
                 Level::Fail,
@@ -792,7 +784,7 @@ fn tracking_result(app: &mut App, ui: &mut egui::Ui) {
         w::readout(
             ui,
             "fastest reached",
-            &format!("{:.0}", r.peak_observed_ips),
+            &w::num(r.peak_observed_ips, 0),
             10,
             "inches/s",
             Level::Info,
@@ -801,7 +793,7 @@ fn tracking_result(app: &mut App, ui: &mut egui::Ui) {
             w::readout(
                 ui,
                 "first failure at",
-                &format!("{:.0}", r.first_failure_ips),
+                &w::num(r.first_failure_ips, 0),
                 10,
                 "inches/s",
                 Level::Warn,

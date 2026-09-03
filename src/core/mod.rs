@@ -8,5 +8,7 @@ pub mod hid_descriptor;
 pub mod polling;
 pub mod ring;
 pub mod sensor;
+pub mod session_log;
+pub mod summary;
 pub mod sim;
 pub mod sample;

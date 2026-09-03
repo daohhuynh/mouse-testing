@@ -1,7 +1,7 @@
 //! Scroll wheel: detent counts, reversed steps and skipped steps.
 
 use crate::app::{App, SensorPhase};
-use crate::core::sensor::scroll::{Axis, ScrollResult};
+use crate::core::sensor::scroll::ScrollResult;
 use crate::core::sensor::Verdict;
 use crate::ui::theme::Level;
 use crate::ui::widgets as w;
@@ -148,7 +148,7 @@ fn axis_result(ui: &mut egui::Ui, r: &ScrollResult) {
             w::readout(
                 ui,
                 "counts per detent",
-                &format!("{:.0}", r.quantum),
+                &w::num(r.quantum, 0),
                 10,
                 "counts",
                 Level::Info,
@@ -156,7 +156,7 @@ fn axis_result(ui: &mut egui::Ui, r: &ScrollResult) {
             w::readout(
                 ui,
                 "steps this explains",
-                &format!("{:.1}", r.quantum_coverage * 100.0),
+                &w::num(r.quantum_coverage * 100.0, 1),
                 10,
                 "%",
                 if r.quantum_coverage >= 0.9 {
@@ -203,7 +203,7 @@ fn axis_result(ui: &mut egui::Ui, r: &ScrollResult) {
             w::readout(
                 ui,
                 "reversal rate",
-                &format!("{:.2}", r.reversal_rate * 100.0),
+                &w::num(r.reversal_rate * 100.0, 2),
                 10,
                 "%",
                 Level::Info,
@@ -211,7 +211,7 @@ fn axis_result(ui: &mut egui::Ui, r: &ScrollResult) {
             w::readout(
                 ui,
                 "skip rate",
-                &format!("{:.2}", r.skip_rate * 100.0),
+                &w::num(r.skip_rate * 100.0, 2),
                 10,
                 "%",
                 Level::Info,
@@ -228,7 +228,7 @@ fn axis_result(ui: &mut egui::Ui, r: &ScrollResult) {
         w::readout(
             ui,
             "typical gap between",
-            &format!("{:.0}", r.median_gap_ms),
+            &w::num(r.median_gap_ms, 0),
             10,
             "ms",
             Level::Info,
@@ -236,7 +236,7 @@ fn axis_result(ui: &mut egui::Ui, r: &ScrollResult) {
         w::readout(
             ui,
             "grouping threshold",
-            &format!("{:.1}", r.cluster_gap_ms),
+            &w::num(r.cluster_gap_ms, 1),
             10,
             "ms",
             Level::Info,

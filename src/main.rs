@@ -58,7 +58,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("mouse testing suite")
-            .with_inner_size([1020.0, 680.0])
+            .with_inner_size(window_size(&args))
             .with_min_inner_size([760.0, 480.0])
             .with_transparent(false)
             .with_resizable(true),
@@ -94,6 +94,10 @@ fn main() -> eframe::Result {
     let ab_demo = args.iter().any(|a| a == "--ab-demo");
     let sensor_demo = args.iter().any(|a| a == "--sensor-demo");
     let scroll_demo = args.iter().any(|a| a == "--scroll-demo");
+    let load_session = args
+        .iter()
+        .position(|a| a == "--load-session")
+        .and_then(|i| args.get(i + 1).cloned());
     let sensor_test = args
         .iter()
         .position(|a| a == "--sensor-test")
@@ -120,6 +124,10 @@ fn main() -> eframe::Result {
             if scroll_demo {
                 app.scroll_demo();
             }
+            if let Some(p) = load_session.clone() {
+                app.load_session(&p);
+                app.select_section("SESSION");
+            }
             if let Some(t) = sensor_test.clone() {
                 app.select_sensor_test(&t);
             }
@@ -133,4 +141,15 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     )
+}
+
+/// Window size, overridable with `--window WIDTHxHEIGHT`. Only useful for
+/// capturing a screenshot of a section taller than the default window.
+fn window_size(args: &[String]) -> [f32; 2] {
+    args.iter()
+        .position(|a| a == "--window")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.split_once('x'))
+        .and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))
+        .unwrap_or([1020.0, 680.0])
 }

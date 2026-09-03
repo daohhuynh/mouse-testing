@@ -83,6 +83,29 @@ pub fn readout(
 
 pub const LABEL_CHARS: usize = 26;
 
+/// A number for display, or a dash when there is not one.
+///
+/// Several statistics here are genuinely undefined on a short capture, and
+/// their computed value is NaN. Printing "NaN" in a readout invites the reader
+/// to treat it as a measurement that went wrong, when it means the measurement
+/// was never taken.
+pub fn num(v: f64, dp: usize) -> String {
+    if v.is_finite() {
+        format!("{v:.dp$}")
+    } else {
+        "-".into()
+    }
+}
+
+/// The same, with a leading sign for figures where the direction is the point.
+pub fn signed(v: f64, dp: usize) -> String {
+    if v.is_finite() {
+        format!("{v:+.dp$}")
+    } else {
+        "-".into()
+    }
+}
+
 /// Key/value line for identifiers and facts. Values are free-form text, so this
 /// one is allowed to be as wide as it needs; it is not a live number.
 pub fn kv(ui: &mut egui::Ui, key: &str, value: &str) {
