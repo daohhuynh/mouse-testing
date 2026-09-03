@@ -57,6 +57,13 @@ ditto "$SRC" "$DEST"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$DEST" >/dev/null 2>&1 || true
 
+# Leave exactly one bundle carrying this identifier. macOS registers every copy
+# under the same one, so a second one makes the Input Monitoring row ambiguous
+# about which app it is describing, and a STALE one is worse: the permission is
+# keyed on the code hash, so an older copy's row can never match the installed
+# app, and the symptom is a toggle that is switched on and does nothing.
+rm -rf "$SRC"
+
 if [ "$REPLACING" = yes ]; then
   # Only needed when REPLACING an app: macOS caches the icon against the bundle,
   # and a fresh install has nothing cached yet. Restarting the Dock is routine

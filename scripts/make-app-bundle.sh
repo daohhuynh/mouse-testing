@@ -20,6 +20,10 @@ ID="dev.mousetesting.suite"
 
 cargo build --release
 
+# Sweep away bundles left by an earlier name. One of these outlived a rename
+# once and took the Input Monitoring grant with it.
+rm -rf target/mouse-testing.app
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
