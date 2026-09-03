@@ -122,9 +122,12 @@ fn setup(app: &mut App, ui: &mut egui::Ui) {
         w::status_line(
             ui,
             Level::Fail,
-            "The capture stopped while this run was recording, so the run is void and nothing \
-             was measured. Press start to run it again.",
+            "This run is void: the capture was not running for the whole of it, so nothing was \
+             measured and no result here describes your mouse. Press start to run it again.",
         );
+        if !app.session.device_note.is_empty() {
+            w::note_indent(ui, 7.0, &app.session.device_note);
+        }
         ui.add_space(6.0);
     }
     w::subheading(ui, "settings");

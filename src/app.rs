@@ -646,10 +646,12 @@ impl App {
 
     fn tick_sensor(&mut self) {
         use sensor::protocol::Test;
-        // A run measures the shared capture, so if that stops the run is void.
-        // Ending it here rather than letting it play out means the answer is
-        // "the capture stopped" instead of a refusal about missing motion.
-        if self.sensor.phase != SensorPhase::Idle && !self.session.running() {
+        // A run measures the shared capture, so if that stops, or the device
+        // behind it goes away, the run is void. Ending it here rather than
+        // letting it play out means the answer is "the capture ended" instead
+        // of a refusal about missing motion, which blames the mouse for not
+        // moving when the truth is that nobody was listening to it.
+        if self.sensor.phase != SensorPhase::Idle && !self.capture_usable() {
             self.sensor.phase = SensorPhase::Idle;
             self.sensor.started = None;
             self.sensor.capture_lost = true;
@@ -1008,7 +1010,7 @@ impl App {
     }
 
     fn tick_scroll(&mut self) {
-        if self.scroll.phase != SensorPhase::Idle && !self.session.running() {
+        if self.scroll.phase != SensorPhase::Idle && !self.capture_usable() {
             self.scroll.phase = SensorPhase::Idle;
             self.scroll.started = None;
             self.scroll.capture_lost = true;
@@ -1256,6 +1258,16 @@ impl App {
     }
 
     /// Begins a capture, optionally after a delay.
+    /// Whether a run in progress can still be measuring anything.
+    ///
+    /// Both halves matter. The session can be stopped out from under a run, and
+    /// the device can be taken away while the session still believes it is
+    /// running, which is the one that went undiagnosed: the level had already
+    /// seen thousands of reports, so nothing downstream doubted it.
+    fn capture_usable(&self) -> bool {
+        self.session.running() && self.session.device_state != crate::capture::LevelState::Blocked
+    }
+
     /// Another section is taking over the shared capture.
     ///
     /// Every section but POLLING reuses a capture that is already running

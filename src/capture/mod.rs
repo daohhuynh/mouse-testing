@@ -146,7 +146,16 @@ fn device_state_after_pump(
     status_running: bool,
     status_opened: usize,
     total_reports: u64,
+    removed: u64,
 ) -> LevelState {
+    // A device the system took away outranks everything below. The reference
+    // this capture holds is dead and a device that comes back is a new one it
+    // never opened, so no report will ever arrive again on this capture. It has
+    // to be checked before the report count, or the level stays Live forever on
+    // the strength of reports that stopped coming.
+    if removed > 0 {
+        return LevelState::Blocked;
+    }
     // A report is proof the device is open, whatever the status said earlier.
     if total_reports > 0 {
         return LevelState::Live;
@@ -471,11 +480,15 @@ impl Session {
     #[cfg(target_os = "macos")]
     fn pump_macos(&mut self) {
         if let Some(mut consumer) = self.hid_consumer.take() {
-            if let Some((ring, decoded, undecoded, status)) = self
-                .hid
-                .as_ref()
-                .map(|h| (h.ring.clone(), h.decoded(), h.undecoded(), h.status()))
-            {
+            if let Some((ring, decoded, undecoded, status, removed)) = self.hid.as_ref().map(|h| {
+                (
+                    h.ring.clone(),
+                    h.decoded(),
+                    h.undecoded(),
+                    h.status(),
+                    h.removed(),
+                )
+            }) {
                 self.decoded = decoded;
                 self.undecoded = undecoded;
                 let refusal = || {
@@ -520,10 +533,19 @@ impl Session {
                     status.running,
                     status.opened,
                     self.device.total,
+                    removed,
                 );
                 if next != self.device_state {
                     self.device_state = next;
                     match next {
+                        LevelState::Blocked if removed > 0 => {
+                            self.device_note = "The device was taken away while this capture \
+                                 was running: unplugged, asleep, or re-enumerated by the \
+                                 system. This capture cannot recover, because the connection \
+                                 it holds is dead and a device that comes back is a new one. \
+                                 Start a new run."
+                                .into()
+                        }
                         LevelState::Blocked => self.device_note = refusal(),
                         // A stale refusal would otherwise sit under a level
                         // that is plainly working.
@@ -782,7 +804,7 @@ mod tests {
         // nothing. Blocking here is what disabled a working device level, and
         // took SENSOR and SCROLL down with it.
         assert_eq!(
-            device_state_after_pump(LevelState::Waiting, false, 0, 0),
+            device_state_after_pump(LevelState::Waiting, false, 0, 0, 0),
             LevelState::Waiting
         );
     }
@@ -790,7 +812,7 @@ mod tests {
     #[test]
     fn a_thread_that_reported_opening_nothing_does_block() {
         assert_eq!(
-            device_state_after_pump(LevelState::Waiting, true, 0, 0),
+            device_state_after_pump(LevelState::Waiting, true, 0, 0, 0),
             LevelState::Blocked
         );
     }
@@ -800,12 +822,30 @@ mod tests {
         // The original recovery fired only from Waiting, so any Blocked reached
         // during startup survived the whole run no matter what arrived.
         assert_eq!(
-            device_state_after_pump(LevelState::Blocked, true, 0, 1),
+            device_state_after_pump(LevelState::Blocked, true, 0, 1, 0),
             LevelState::Live
         );
         assert_eq!(
-            device_state_after_pump(LevelState::Waiting, true, 1, 19_156),
+            device_state_after_pump(LevelState::Waiting, true, 1, 19_156, 0),
             LevelState::Live
+        );
+    }
+
+    #[test]
+    fn a_device_taken_away_beats_the_reports_it_already_delivered() {
+        // The failure this exists for: a capture that has been running happily
+        // loses its device, and every later pump still sees a report count in
+        // the thousands. Ranking that count first left the level Live and the
+        // whole app blind, so a run that measured nothing reported it as a
+        // mouse that did not move.
+        assert_eq!(
+            device_state_after_pump(LevelState::Live, true, 1, 6_300, 1),
+            LevelState::Blocked
+        );
+        // And it must not un-block itself on any later pump either.
+        assert_eq!(
+            device_state_after_pump(LevelState::Blocked, true, 1, 6_300, 1),
+            LevelState::Blocked
         );
     }
 
@@ -814,12 +854,12 @@ mod tests {
         // The whole sequence a real run goes through, in order.
         let mut st = LevelState::Waiting;
         for _ in 0..5 {
-            st = device_state_after_pump(st, false, 0, 0); // thread still opening
+            st = device_state_after_pump(st, false, 0, 0, 0); // thread still opening
         }
         assert_eq!(st, LevelState::Waiting);
-        st = device_state_after_pump(st, true, 1, 0); // published, opened one
+        st = device_state_after_pump(st, true, 1, 0, 0); // published, opened one
         assert_eq!(st, LevelState::Waiting);
-        st = device_state_after_pump(st, true, 1, 42); // reports arriving
+        st = device_state_after_pump(st, true, 1, 42, 0); // reports arriving
         assert_eq!(st, LevelState::Live);
     }
 }

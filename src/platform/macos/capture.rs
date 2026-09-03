@@ -71,6 +71,10 @@ struct Ctx {
     decoded: AtomicU64,
     /// Reports for which no matching descriptor field set was found.
     undecoded: AtomicU64,
+    /// Devices IOKit told us went away mid-capture. A capture cannot recover
+    /// from one: the reference it holds is dead, and a device that comes back
+    /// is a new one this capture never opened.
+    removed: AtomicU64,
     /// Filled before the run loop starts, so the callback only ever reads it.
     maps: std::sync::OnceLock<Box<[DeviceMap]>>,
 }
@@ -82,6 +86,17 @@ pub struct HidCapture {
     runloop: Arc<AtomicPtr<c_void>>,
     join: Option<std::thread::JoinHandle<()>>,
     ctx: Arc<Ctx>,
+}
+
+/// IOKit has taken a device away. Three arguments, not four: see the note on
+/// `IOHIDCallback` in ffi.rs.
+extern "C" fn removal_cb(context: *mut c_void, _result: IOReturn, _sender: *mut c_void) {
+    if context.is_null() {
+        return;
+    }
+    unsafe { &*(context as *const Ctx) }
+        .removed
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 extern "C" fn report_cb(
@@ -235,6 +250,7 @@ impl HidCapture {
             values_skipped: AtomicU64::new(0),
             decoded: AtomicU64::new(0),
             undecoded: AtomicU64::new(0),
+            removed: AtomicU64::new(0),
             maps: std::sync::OnceLock::new(),
         });
         let status = Arc::new(Mutex::new(Status::default()));
@@ -275,6 +291,10 @@ impl HidCapture {
 
     pub fn values_skipped(&self) -> u64 {
         self.ctx.values_skipped.load(Ordering::Relaxed)
+    }
+
+    pub fn removed(&self) -> u64 {
+        self.ctx.removed.load(Ordering::Relaxed)
     }
 
     pub fn decoded(&self) -> u64 {
@@ -427,6 +447,11 @@ unsafe fn run_loop_thread(
         );
         buffers.push((buf, sz));
 
+        // Without this the app cannot tell a device that went away from one
+        // that has nothing to say. Both look like silence, and silence was
+        // being reported as a mouse that did not move.
+        IOHIDDeviceRegisterRemovalCallback(dev, Some(removal_cb), ctx_ptr);
+
         // Decoding is driven by the descriptor rather than by IOKit's value
         // callback, which is change-driven and was observed delivering nothing
         // at all for devices that were reporting normally.
@@ -512,6 +537,7 @@ unsafe fn run_loop_thread(
             None,
             std::ptr::null_mut(),
         );
+        IOHIDDeviceRegisterRemovalCallback(dev, None, std::ptr::null_mut());
         IOHIDDeviceClose(dev, kIOHIDOptionsTypeNone);
     }
     CFRunLoopRemoveSource(CFRunLoopGetCurrent(), keepalive, kCFRunLoopDefaultMode);
