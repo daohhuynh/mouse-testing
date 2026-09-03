@@ -14,8 +14,46 @@ mod selftest;
 mod statscheck;
 mod ui;
 
+const HELP: &str = "\
+mouse testing suite: measures what a pointing device actually does.
+
+    mouse-testing                       run the interface
+    mouse-testing --section NAME        open on a named section
+                                        DEVICE POLLING CLICKS CPS A/B
+                                        SENSOR SCROLL SESSION
+
+  reporting
+    --dump                              device and environment report to stdout
+    --dump-to FILE                      the same, to a file
+    --screenshot FILE                   render the window to a PNG and exit
+    --window WIDTHxHEIGHT               window size, for a tall section
+
+  session data
+    --load-session FILE                 open a previous export
+    --capture-test SECS --out FILE      capture unattended, export, verify the
+                                        round trip, write a report and exit
+
+  checks
+    --selftest-hid SECS                 exercise the HID capture path (macOS)
+    --stats-check IN OUT                run the statistics against a fixture
+    --request-access                    ask macOS for Input Monitoring
+
+  inspecting result views without hardware
+    --ab-demo
+    --sensor-demo [--sensor-test NAME]  cpi drift snap smooth tracking
+    --scroll-demo
+
+Exports go to ~/mouse-testing-exports. No administrator or root privilege is
+needed for anything. On macOS the device level needs Input Monitoring; the app
+says so rather than reporting zero.
+";
+
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{HELP}");
+        return Ok(());
+    }
     if args.iter().any(|a| a == "--dump") {
         dump::run(None);
         return Ok(());
