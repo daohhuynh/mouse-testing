@@ -42,6 +42,15 @@ fn setup(app: &mut App, ui: &mut egui::Ui) {
     });
 
     ui.add_space(8.0);
+    if app.scroll.capture_lost {
+        w::status_line(
+            ui,
+            Level::Fail,
+            "The capture stopped while this run was recording, so the run is void and nothing \
+             was measured. Press start to run it again.",
+        );
+        ui.add_space(6.0);
+    }
     w::subheading(ui, "settings");
     w::boxed(ui, |ui| {
         ui.horizontal(|ui| {

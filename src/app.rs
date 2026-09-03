@@ -139,6 +139,10 @@ pub struct ScrollState {
     /// Wheel reports the last capture collected, so a run that saw nothing can
     /// say so rather than showing an empty result.
     pub last_reports: usize,
+    /// Set when the shared capture stopped while this run was recording.
+    /// The run is void, and without this it would end in a refusal that
+    /// reads as though the mouse stopped moving.
+    pub capture_lost: bool,
 }
 
 impl Default for ScrollState {
@@ -149,6 +153,7 @@ impl Default for ScrollState {
             capture_s: 20.0,
             started: None,
             baseline: 0,
+            capture_lost: false,
             vertical: None,
             horizontal: None,
             last_reports: 0,
@@ -196,6 +201,10 @@ pub struct SensorState {
     /// Reports the last capture actually collected, so a run that measured
     /// nothing can say so instead of showing an empty result.
     pub last_reports: usize,
+    /// Set when the shared capture stopped while this run was recording.
+    /// The run is void, and without this it would end in a refusal that
+    /// reads as though the mouse stopped moving.
+    pub capture_lost: bool,
 }
 
 impl Default for SensorState {
@@ -209,6 +218,7 @@ impl Default for SensorState {
             claimed_cpi: String::new(),
             distance: String::new(),
             distance_mm: false,
+            capture_lost: false,
             cpi_trials: Vec::new(),
             cpi_summary: None,
             drift: None,
@@ -382,6 +392,7 @@ impl App {
         if !self.plan_ready() {
             return;
         }
+        self.claim_capture();
         if !self.session.running() {
             self.start_capture(0.0);
         }
@@ -539,6 +550,7 @@ impl App {
     pub fn cps_start(&mut self, delay_s: f64) {
         // A clicks-per-second run needs button events, so the capture has to be
         // live for it to count anything.
+        self.claim_capture();
         if !self.session.running() {
             self.start_capture(0.0);
         }
@@ -593,10 +605,12 @@ impl App {
 
     /// Begins one sensor test after the countdown.
     pub fn sensor_start(&mut self) {
+        self.claim_capture();
         if !self.session.running() {
             self.session.os_build = self.os_build_number();
             self.session.start(self.selected.as_deref());
         }
+        self.sensor.capture_lost = false;
         self.sensor.baseline = self.session.device.times_ns.len();
         self.sensor.started = Some(Instant::now());
         self.sensor.phase = SensorPhase::Countdown;
@@ -632,6 +646,15 @@ impl App {
 
     fn tick_sensor(&mut self) {
         use sensor::protocol::Test;
+        // A run measures the shared capture, so if that stops the run is void.
+        // Ending it here rather than letting it play out means the answer is
+        // "the capture stopped" instead of a refusal about missing motion.
+        if self.sensor.phase != SensorPhase::Idle && !self.session.running() {
+            self.sensor.phase = SensorPhase::Idle;
+            self.sensor.started = None;
+            self.sensor.capture_lost = true;
+            return;
+        }
         match self.sensor.phase {
             SensorPhase::Idle => return,
             SensorPhase::Countdown => {
@@ -962,10 +985,12 @@ impl App {
     // ------------------------------------------------------------ scroll
 
     pub fn scroll_start(&mut self) {
+        self.claim_capture();
         if !self.session.running() {
             self.session.os_build = self.os_build_number();
             self.session.start(self.selected.as_deref());
         }
+        self.scroll.capture_lost = false;
         self.scroll.baseline = self.session.device.times_ns.len();
         self.scroll.started = Some(Instant::now());
         self.scroll.phase = SensorPhase::Countdown;
@@ -983,6 +1008,12 @@ impl App {
     }
 
     fn tick_scroll(&mut self) {
+        if self.scroll.phase != SensorPhase::Idle && !self.session.running() {
+            self.scroll.phase = SensorPhase::Idle;
+            self.scroll.started = None;
+            self.scroll.capture_lost = true;
+            return;
+        }
         match self.scroll.phase {
             SensorPhase::Idle => return,
             SensorPhase::Countdown => {
@@ -1225,6 +1256,20 @@ impl App {
     }
 
     /// Begins a capture, optionally after a delay.
+    /// Another section is taking over the shared capture.
+    ///
+    /// Every section but POLLING reuses a capture that is already running
+    /// rather than restarting it, so `start_capture` does not run and nothing
+    /// else would clear the arming. A polling run left armed underneath one of
+    /// those will stop the capture the moment its verdict settles, and the
+    /// section on screen carries on counting down against a dead capture:
+    /// reports frozen, timer running, and a refusal at the end that reads like
+    /// the mouse stopped moving. Any new section that shares the capture must
+    /// call this.
+    pub fn claim_capture(&mut self) {
+        self.poll_armed = false;
+    }
+
     /// Start a run from the POLLING section, which is the only one allowed to
     /// end early on its own.
     pub fn start_poll_run(&mut self, delay_s: f64) {
@@ -1329,6 +1374,7 @@ impl App {
             // information, only fatigue.
             if self.poll_armed
                 && self.poll_auto_stop
+                && self.section == Section::Polling
                 && self.session.running()
                 && verdict_settled(&self.poll_result, &cfg)
             {
