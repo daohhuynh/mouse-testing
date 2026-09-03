@@ -15,6 +15,7 @@
 pub mod cpi;
 pub mod drift;
 pub mod protocol;
+pub mod scroll;
 pub mod seg;
 pub mod smooth;
 pub mod snap;

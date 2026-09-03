@@ -93,6 +93,7 @@ fn main() -> eframe::Result {
         });
     let ab_demo = args.iter().any(|a| a == "--ab-demo");
     let sensor_demo = args.iter().any(|a| a == "--sensor-demo");
+    let scroll_demo = args.iter().any(|a| a == "--scroll-demo");
     let sensor_test = args
         .iter()
         .position(|a| a == "--sensor-test")
@@ -115,6 +116,9 @@ fn main() -> eframe::Result {
             }
             if sensor_demo {
                 app.sensor_demo();
+            }
+            if scroll_demo {
+                app.scroll_demo();
             }
             if let Some(t) = sensor_test.clone() {
                 app.select_sensor_test(&t);

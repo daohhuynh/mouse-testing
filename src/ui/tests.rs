@@ -186,3 +186,35 @@ fn state_colours_are_distinct_and_everything_else_is_grey() {
     assert_ne!(theme::WARN, theme::FAIL);
 }
 
+
+#[test]
+fn a_boxed_group_is_the_same_width_whatever_is_inside_it() {
+    // A frame that sizes to its contents resizes whenever the text inside it
+    // changes, so a result box would visibly jump when a verdict went from
+    // "detents clean" to "encoder errors present". Nothing but the digits
+    // should move when a measurement changes.
+    let ctx = ctx();
+    let mut widths = Vec::new();
+    ctx.run_ui(egui::RawInput::default(), |ui| {
+        for text in [
+            "ok",
+            "encoder errors present",
+            "no firmware smoothing signature at all, on either statistic",
+        ] {
+            let before = ui.min_rect().width();
+            w::boxed(ui, |ui| {
+                w::status_line(ui, Level::Info, text);
+            });
+            let after = ui.min_rect().width();
+            widths.push((text, after.max(before)));
+        }
+    });
+    let (_, first) = widths[0];
+    assert!(first > 50.0, "the box collapsed to {first} wide");
+    for (text, wd) in &widths {
+        assert!(
+            (wd - first).abs() < 0.01,
+            "content {text:?} gave box width {wd} but the first gave {first}"
+        );
+    }
+}

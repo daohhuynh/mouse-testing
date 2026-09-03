@@ -15,16 +15,18 @@ pub enum Section {
     Cps,
     Ab,
     Sensor,
+    Scroll,
 }
 
 impl Section {
-    pub const ALL: [Section; 6] = [
+    pub const ALL: [Section; 7] = [
         Section::Device,
         Section::Polling,
         Section::Clicks,
         Section::Cps,
         Section::Ab,
         Section::Sensor,
+        Section::Scroll,
     ];
 
     pub fn title(self) -> &'static str {
@@ -35,6 +37,7 @@ impl Section {
             Section::Cps => "CPS",
             Section::Ab => "A/B",
             Section::Sensor => "SENSOR",
+            Section::Scroll => "SCROLL",
         }
     }
 }
@@ -79,6 +82,43 @@ pub struct App {
     pub cps: CpsState,
     pub ab: AbState,
     pub sensor: SensorState,
+    pub scroll: ScrollState,
+}
+
+/// Scroll wheel capture. One capture feeds both encoders, because a person
+/// scrolling and tilting in one session should not have to do it twice.
+pub struct ScrollState {
+    pub phase: SensorPhase,
+    pub countdown_s: f64,
+    pub capture_s: f64,
+    started: Option<Instant>,
+    baseline: usize,
+    pub vertical: Option<sensor::scroll::ScrollResult>,
+    pub horizontal: Option<sensor::scroll::ScrollResult>,
+    /// Wheel reports the last capture collected, so a run that saw nothing can
+    /// say so rather than showing an empty result.
+    pub last_reports: usize,
+}
+
+impl Default for ScrollState {
+    fn default() -> Self {
+        ScrollState {
+            phase: SensorPhase::Idle,
+            countdown_s: 3.0,
+            capture_s: 20.0,
+            started: None,
+            baseline: 0,
+            vertical: None,
+            horizontal: None,
+            last_reports: 0,
+        }
+    }
+}
+
+impl ScrollState {
+    pub fn elapsed_s(&self) -> f64 {
+        self.started.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0)
+    }
 }
 
 /// Phase of one sensor test.
@@ -291,6 +331,7 @@ impl App {
             cps: CpsState::default(),
             ab: AbState::default(),
             sensor: SensorState::default(),
+            scroll: ScrollState::default(),
         }
     }
 
@@ -617,6 +658,79 @@ impl App {
         self.sensor.started = None;
     }
 
+    // ------------------------------------------------------------ scroll
+
+    pub fn scroll_start(&mut self) {
+        if !self.session.running() {
+            self.session.start(self.selected.as_deref());
+        }
+        self.scroll.baseline = self.session.device.times_ns.len();
+        self.scroll.started = Some(Instant::now());
+        self.scroll.phase = SensorPhase::Countdown;
+    }
+
+    pub fn scroll_abandon(&mut self) {
+        self.scroll.phase = SensorPhase::Idle;
+        self.scroll.started = None;
+    }
+
+    pub fn scroll_clear(&mut self) {
+        self.scroll.vertical = None;
+        self.scroll.horizontal = None;
+        self.scroll.last_reports = 0;
+    }
+
+    fn tick_scroll(&mut self) {
+        match self.scroll.phase {
+            SensorPhase::Idle => return,
+            SensorPhase::Countdown => {
+                if self.scroll.elapsed_s() >= self.scroll.countdown_s {
+                    self.scroll.baseline = self.session.device.times_ns.len();
+                    self.scroll.started = Some(Instant::now());
+                    self.scroll.phase = SensorPhase::Recording;
+                }
+                return;
+            }
+            SensorPhase::Recording => {
+                if self.scroll.elapsed_s() < self.scroll.capture_s {
+                    return;
+                }
+            }
+        }
+
+        let s = &self.session.device;
+        let from = self.scroll.baseline.min(s.times_ns.len());
+        let reports: Vec<sensor::Report> = s.times_ns[from..]
+            .iter()
+            .zip(s.wheel[from..].iter().zip(&s.hwheel[from..]))
+            .map(|(&t, (&w, &h))| sensor::Report {
+                t_ns: t,
+                dx: 0,
+                dy: 0,
+                wheel: w,
+                hwheel: h,
+            })
+            .collect();
+        self.scroll.last_reports = reports
+            .iter()
+            .filter(|r| r.wheel != 0 || r.hwheel != 0)
+            .count();
+        let cfg = sensor::scroll::ScrollConfig::default();
+        self.scroll.vertical = Some(sensor::scroll::analyze_axis(
+            &reports,
+            sensor::scroll::Axis::Vertical,
+            &cfg,
+        ));
+        // Only reported when the wheel actually tilted. A device with no
+        // horizontal encoder should not be shown an empty result for one.
+        let any_h = reports.iter().any(|r| r.hwheel != 0);
+        self.scroll.horizontal = any_h.then(|| {
+            sensor::scroll::analyze_axis(&reports, sensor::scroll::Axis::Horizontal, &cfg)
+        });
+        self.scroll.phase = SensorPhase::Idle;
+        self.scroll.started = None;
+    }
+
     /// Fills in one finished result per sensor test, so each result view can be
     /// inspected without a mouse in hand. Command line only; nothing in the
     /// normal path reaches it.
@@ -749,6 +863,47 @@ impl App {
         self.section = Section::Sensor;
     }
 
+    /// A finished scroll result, so both axis views can be inspected without a
+    /// wheel to turn. Command line only.
+    pub fn scroll_demo(&mut self) {
+        use sensor::scroll::{Axis, ScrollResult};
+        self.scroll.vertical = Some(ScrollResult {
+            verdict: sensor::Verdict::Fail,
+            continuous: false,
+            quantum: 120.0,
+            quantum_coverage: 0.96,
+            n_clusters: 148,
+            detents_up: 74,
+            detents_down: 71,
+            reversals: 4,
+            skips: 2,
+            reversal_rate: 4.0 / 148.0,
+            skip_rate: 2.0 / 148.0,
+            median_gap_ms: 88.0,
+            cluster_gap_ms: 12.0,
+            axis: Axis::Vertical,
+            note: "encoder errors present",
+        });
+        self.scroll.horizontal = Some(ScrollResult {
+            verdict: sensor::Verdict::Pass,
+            continuous: false,
+            quantum: 120.0,
+            quantum_coverage: 1.0,
+            n_clusters: 22,
+            detents_up: 11,
+            detents_down: 11,
+            reversals: 0,
+            skips: 0,
+            reversal_rate: 0.0,
+            skip_rate: 0.0,
+            median_gap_ms: 143.0,
+            cluster_gap_ms: 12.0,
+            axis: Axis::Horizontal,
+            note: "detents clean",
+        });
+        self.section = Section::Scroll;
+    }
+
     /// Selects one sensor test by name, for the command line.
     pub fn select_sensor_test(&mut self, name: &str) {
         let n = name.to_ascii_lowercase();
@@ -839,6 +994,7 @@ impl App {
         self.tick_cps();
         self.tick_ab();
         self.tick_sensor();
+        self.tick_scroll();
 
         // Re-analysing a long capture every frame would make the interface
         // the slowest thing in the program, so it runs a few times a second.
@@ -978,6 +1134,7 @@ impl eframe::App for App {
                         Section::Cps => sections::cps::show(self, ui),
                         Section::Ab => sections::ab::show(self, ui),
                         Section::Sensor => sections::sensor::show(self, ui),
+                        Section::Scroll => sections::scroll::show(self, ui),
                     });
             });
     }

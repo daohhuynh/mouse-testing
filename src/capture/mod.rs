@@ -35,6 +35,11 @@ pub struct Series {
     /// about the axis across the stroke.
     pub dx: Vec<i32>,
     pub dy: Vec<i32>,
+    /// Raw wheel counts, parallel to `times_ns`. Raw, not detents: what one
+    /// detent is worth is device- and platform-dependent and is inferred by the
+    /// scroll analysis rather than assumed here.
+    pub wheel: Vec<i32>,
+    pub hwheel: Vec<i32>,
     pub total: u64,
     /// Samples the ring had to discard because the consumer fell behind.
     pub ring_drops: u64,
@@ -52,6 +57,8 @@ impl Series {
         self.counts.clear();
         self.dx.clear();
         self.dy.clear();
+        self.wheel.clear();
+        self.hwheel.clear();
         self.total = 0;
         self.ring_drops = 0;
     }
@@ -61,6 +68,21 @@ impl Series {
             .iter()
             .zip(&self.counts)
             .map(|(&t, &c)| polling::Report { t_ns: t, counts: c })
+            .collect()
+    }
+
+    /// The same series as scroll reports.
+    pub fn scroll(&self) -> Vec<crate::core::sensor::Report> {
+        self.times_ns
+            .iter()
+            .zip(self.wheel.iter().zip(&self.hwheel))
+            .map(|(&t, (&w, &h))| crate::core::sensor::Report {
+                t_ns: t,
+                dx: 0,
+                dy: 0,
+                wheel: w,
+                hwheel: h,
+            })
             .collect()
     }
 
@@ -407,6 +429,8 @@ impl Session {
                     });
                     self.device.dx.push(s.dx);
                     self.device.dy.push(s.dy);
+                    self.device.wheel.push(s.wheel);
+                    self.device.hwheel.push(s.hwheel);
                     self.device.total += 1;
                     if s.has(Flags::DECODED) {
                         self.push_button_edges(s.device, s.buttons_state, t, Tier::Device);
@@ -439,6 +463,8 @@ impl Session {
                         .push(s.dx.unsigned_abs().saturating_add(s.dy.unsigned_abs()) as i32);
                     self.system.dx.push(s.dx);
                     self.system.dy.push(s.dy);
+                    self.system.wheel.push(s.wheel);
+                    self.system.hwheel.push(s.hwheel);
                     self.system.total += 1;
                     if self.button_source != Some(Tier::Device) {
                         self.push_button_transitions(s.buttons_down, s.buttons_up, t, Tier::System);
@@ -476,6 +502,8 @@ impl Session {
                         .push(s.dx.unsigned_abs().saturating_add(s.dy.unsigned_abs()) as i32);
                     self.device.dx.push(s.dx);
                     self.device.dy.push(s.dy);
+                    self.device.wheel.push(s.wheel);
+                    self.device.hwheel.push(s.hwheel);
                     self.device.total += 1;
                     self.push_button_transitions(s.buttons_down, s.buttons_up, t, Tier::Device);
                 }
@@ -505,6 +533,8 @@ impl Session {
                     self.system.counts.push(0);
                     self.system.dx.push(0);
                     self.system.dy.push(0);
+                    self.system.wheel.push(s.wheel);
+                    self.system.hwheel.push(s.hwheel);
                     self.system.total += 1;
                     if self.button_source != Some(Tier::Device) {
                         self.push_button_transitions(s.buttons_down, s.buttons_up, t, Tier::System);

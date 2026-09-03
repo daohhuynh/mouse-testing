@@ -408,3 +408,168 @@ fn no_detector_panics_on_a_degenerate_capture() {
     }
 }
 
+
+// ---------------------------------------------------------------- scroll
+
+fn scroll_stream(sim: &ScrollSim, detents: usize, r: &mut Rng) -> Vec<Report> {
+    // Half up then half down, which is what a person actually does and what the
+    // direction counts have to separate.
+    let mut a = sim.render(detents / 2, 1, r);
+    let last = a.last().map(|x| x.t_ns).unwrap_or(0);
+    let mut b = sim.render(detents - detents / 2, -1, r);
+    for x in b.iter_mut() {
+        x.t_ns += last + 400_000_000;
+    }
+    a.append(&mut b);
+    a
+}
+
+#[test]
+fn scroll_infers_the_counts_per_detent_of_every_common_wheel() {
+    // What one detent is worth is device and platform dependent, so assuming it
+    // would be wrong on most hardware. These four shapes are all real.
+    let cases: [(&str, ScrollSim, f64); 4] = [
+        ("classic, 1 count per detent", ScrollSim::default(), 1.0),
+        (
+            "Windows WHEEL_DELTA, 120 per detent",
+            ScrollSim { counts_per_detent: 120, ..Default::default() },
+            120.0,
+        ),
+        (
+            "high resolution, 120 split across 4 reports",
+            ScrollSim { counts_per_detent: 120, reports_per_detent: 4, ..Default::default() },
+            120.0,
+        ),
+        (
+            "HID++ high resolution, 8 sub-counts per detent",
+            ScrollSim { counts_per_detent: 8, reports_per_detent: 8, ..Default::default() },
+            8.0,
+        ),
+    ];
+    for (name, sim, truth) in cases {
+        let mut r = rng(30);
+        let reports = scroll_stream(&sim, 60, &mut r);
+        let out = scroll::analyze_scroll(&reports, &scroll::ScrollConfig::default());
+        assert_eq!(out.quantum, truth, "{name}: inferred {}", out.quantum);
+        assert!(!out.continuous, "{name} was called continuous");
+    }
+}
+
+#[test]
+fn scroll_counts_detents_in_both_directions() {
+    for sim in [
+        ScrollSim::default(),
+        ScrollSim { counts_per_detent: 120, reports_per_detent: 4, ..Default::default() },
+    ] {
+        let mut r = rng(31);
+        let reports = scroll_stream(&sim, 80, &mut r);
+        let out = scroll::analyze_scroll(&reports, &scroll::ScrollConfig::default());
+        assert_eq!(out.detents_up, 40, "up count wrong");
+        assert_eq!(out.detents_down, 40, "down count wrong");
+        assert_eq!(out.verdict, Verdict::Pass, "note: {}", out.note);
+    }
+}
+
+#[test]
+fn scroll_detects_an_encoder_that_reverses() {
+    let sim = ScrollSim { reverse_prob: 0.03, ..Default::default() };
+    let mut r = rng(32);
+    let mut flagged = 0;
+    for _ in 0..40 {
+        let reports = scroll_stream(&sim, 150, &mut r);
+        let out = scroll::analyze_scroll(&reports, &scroll::ScrollConfig::default());
+        if out.verdict != Verdict::Pass {
+            flagged += 1;
+        }
+    }
+    assert!(flagged >= 36, "only {flagged}/40 runs flagged a 3% reversal rate");
+}
+
+#[test]
+fn scroll_detects_skipped_steps() {
+    let sim = ScrollSim { skip_prob: 0.08, ..Default::default() };
+    let mut r = rng(33);
+    let mut flagged = 0;
+    for _ in 0..40 {
+        let reports = scroll_stream(&sim, 150, &mut r);
+        let out = scroll::analyze_scroll(&reports, &scroll::ScrollConfig::default());
+        if out.verdict != Verdict::Pass {
+            flagged += 1;
+        }
+    }
+    assert!(flagged >= 36, "only {flagged}/40 runs flagged an 8% skip rate");
+}
+
+#[test]
+fn scroll_does_not_call_a_fast_flick_a_skip() {
+    // A genuine flick merges detents, which looks exactly like a double step.
+    // What separates them is that a flick also shortens the gap, so a real
+    // skip is a double that arrives at an ordinary cadence.
+    let sim = ScrollSim { cadence_ms: 25.0, cadence_jitter_ms: 6.0, ..Default::default() };
+    let mut r = rng(34);
+    let mut failed = 0;
+    for _ in 0..40 {
+        let reports = scroll_stream(&sim, 120, &mut r);
+        let out = scroll::analyze_scroll(&reports, &scroll::ScrollConfig::default());
+        if out.verdict == Verdict::Fail {
+            failed += 1;
+        }
+    }
+    assert_eq!(failed, 0, "{failed}/40 clean fast scrolls called defective");
+}
+
+#[test]
+fn scroll_refuses_to_count_detents_on_a_free_spinning_wheel() {
+    // A wheel with no detents has no detent count. Reporting one would be an
+    // invented number, so the analysis says so instead.
+    let sim = ScrollSim { continuous: true, ..Default::default() };
+    let mut r = rng(35);
+    let reports = scroll_stream(&sim, 120, &mut r);
+    let out = scroll::analyze_scroll(&reports, &scroll::ScrollConfig::default());
+    assert!(out.continuous, "quantum {} coverage {}", out.quantum, out.quantum_coverage);
+    assert_eq!(out.verdict, Verdict::Inconclusive);
+}
+
+#[test]
+fn scroll_analyses_the_tilt_wheel_separately() {
+    let sim = ScrollSim { horizontal: true, ..Default::default() };
+    let mut r = rng(36);
+    let reports = scroll_stream(&sim, 60, &mut r);
+    let cfg = scroll::ScrollConfig::default();
+    let h = scroll::analyze_axis(&reports, scroll::Axis::Horizontal, &cfg);
+    assert_eq!(h.detents_up + h.detents_down, 60);
+    // The vertical wheel saw nothing, and must not borrow the horizontal one's
+    // data to claim it did.
+    let v = scroll::analyze_axis(&reports, scroll::Axis::Vertical, &cfg);
+    assert_eq!(v.verdict, Verdict::Inconclusive);
+    assert_eq!(v.detents_up + v.detents_down, 0);
+}
+
+#[test]
+fn scroll_cluster_gap_search_is_linear_enough_for_the_interface_thread() {
+    // The split search used to recompute each candidate's scatter from scratch,
+    // which is quadratic: 665 ms at 40k wheel reports and 2.72 s at 80k, on the
+    // thread that draws the window. A free-spinning high-resolution wheel
+    // reaches 80k in under two minutes.
+    let sim = ScrollSim { counts_per_detent: 8, reports_per_detent: 8, cadence_ms: 30.0,
+                          cadence_jitter_ms: 8.0, ..Default::default() };
+    let mut r = rng(37);
+    let reports = scroll_stream(&sim, 5000, &mut r);
+    assert!(reports.len() > 30_000, "only {} reports", reports.len());
+    let t = std::time::Instant::now();
+    let out = scroll::analyze_scroll(&reports, &scroll::ScrollConfig::default());
+    let ms = t.elapsed().as_secs_f64() * 1000.0;
+    assert!(ms < 250.0, "analysis took {ms:.0} ms on {} reports", reports.len());
+    assert_eq!(out.quantum, 8.0);
+}
+
+#[test]
+fn scroll_refuses_a_capture_whose_clock_went_backwards() {
+    let sim = ScrollSim::default();
+    let mut r = rng(38);
+    let mut reports = scroll_stream(&sim, 60, &mut r);
+    let mid = reports.len() / 2;
+    reports[mid].t_ns = reports[mid].t_ns.saturating_sub(500_000_000);
+    let out = scroll::analyze_scroll(&reports, &scroll::ScrollConfig::default());
+    assert_eq!(out.verdict, Verdict::Inconclusive);
+}

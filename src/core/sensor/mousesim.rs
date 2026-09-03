@@ -453,3 +453,87 @@ impl MouseSim {
         out
     }
 }
+
+// ---------------------------------------------------------------- scroll
+
+/// Wheel simulator. The vertical and horizontal encoders behave the same way,
+/// so one model covers both.
+#[derive(Clone, Debug)]
+pub struct ScrollSim {
+    /// Counts emitted per detent in total.
+    pub counts_per_detent: i32,
+    /// Split each detent across this many reports, as a high-resolution wheel
+    /// does.
+    pub reports_per_detent: usize,
+    /// Mean time between detents, ms.
+    pub cadence_ms: f64,
+    pub cadence_jitter_ms: f64,
+    /// Probability a detent comes out with the wrong sign.
+    pub reverse_prob: f64,
+    /// Probability a detent comes out as two steps.
+    pub skip_prob: f64,
+    /// Free-spin: a smoothly varying magnitude with no quantum at all.
+    pub continuous: bool,
+    /// Emit on the horizontal wheel instead of the vertical one.
+    pub horizontal: bool,
+}
+
+impl Default for ScrollSim {
+    fn default() -> Self {
+        ScrollSim {
+            counts_per_detent: 1,
+            reports_per_detent: 1,
+            cadence_ms: 90.0,
+            cadence_jitter_ms: 25.0,
+            reverse_prob: 0.0,
+            skip_prob: 0.0,
+            continuous: false,
+            horizontal: false,
+        }
+    }
+}
+
+impl ScrollSim {
+    pub fn render(&self, n_detents: usize, dir: i32, rng: &mut Rng) -> Vec<Report> {
+        let mut t = 10.0f64; // ms
+        let mut out = Vec::new();
+        let emit = |t_ms: f64, v: i32, out: &mut Vec<Report>| {
+            let t_ns = (t_ms * 1.0e6) as u64;
+            out.push(if self.horizontal {
+                Report { t_ns, dx: 0, dy: 0, wheel: 0, hwheel: v }
+            } else {
+                Report::wheel_ev(t_ns, v)
+            });
+        };
+        for _ in 0..n_detents {
+            t += (self.cadence_ms + self.cadence_jitter_ms * rng.normal()).max(20.0);
+            let mut sign = dir;
+            if rng.unit() < self.reverse_prob {
+                sign = -sign;
+            }
+            let mult = if rng.unit() < self.skip_prob { 2 } else { 1 };
+            if self.continuous {
+                let m = (3.0 + 60.0 * rng.unit()).round() as i32;
+                emit(t, sign * m, &mut out);
+                continue;
+            }
+            let total = self.counts_per_detent * mult;
+            let n = self.reports_per_detent.max(1);
+            let per = (total / n as i32).max(1);
+            let mut left = total;
+            for i in 0..n {
+                let v = if i == n - 1 { left } else { per };
+                left -= v;
+                if v == 0 {
+                    continue;
+                }
+                // Sub-reports inside one detent arrive about a millisecond
+                // apart, well inside the time the wheel takes to snap over the
+                // notch.
+                emit(t + i as f64, sign * v, &mut out);
+            }
+        }
+        out.sort_by_key(|r| r.t_ns);
+        out
+    }
+}

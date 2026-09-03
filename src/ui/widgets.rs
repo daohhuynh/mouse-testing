@@ -239,13 +239,22 @@ pub fn chip(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
 }
 
 /// Framed box used to group a block of readouts.
+///
+/// Always the full width of the panel. Left to size itself to its contents, the
+/// frame would grow and shrink as the text inside it changed, so a box whose
+/// status line went from "detents clean" to "encoder errors present" would
+/// visibly resize on a state change. Fixing the width means the only thing that
+/// moves when a measurement changes is the digits.
 pub fn boxed<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(theme::BLACK)
         .stroke(egui::Stroke::new(1.0, theme::GREY_LINE))
         .corner_radius(theme::NO_ROUND)
         .inner_margin(egui::Margin::same(6))
-        .show(ui, add)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        })
         .inner
 }
 
