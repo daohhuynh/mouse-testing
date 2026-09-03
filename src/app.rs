@@ -393,7 +393,7 @@ impl App {
             return;
         }
         self.claim_capture();
-        if !self.session.running() {
+        if !self.session.running() || self.session.device_removed {
             self.start_capture(0.0);
         }
         self.ab.trials.clear();
@@ -551,7 +551,7 @@ impl App {
         // A clicks-per-second run needs button events, so the capture has to be
         // live for it to count anything.
         self.claim_capture();
-        if !self.session.running() {
+        if !self.session.running() || self.session.device_removed {
             self.start_capture(0.0);
         }
         if delay_s > 0.0 {
@@ -606,7 +606,11 @@ impl App {
     /// Begins one sensor test after the countdown.
     pub fn sensor_start(&mut self) {
         self.claim_capture();
-        if !self.session.running() {
+        // Not just `!running()`: a capture whose device was taken away stays
+        // running forever and delivers nothing, so a run started on top of it
+        // would record against a corpse. That is the failure this whole thread
+        // of work began with.
+        if !self.session.running() || self.session.device_removed {
             self.session.os_build = self.os_build_number();
             self.session.start(self.selected.as_deref());
         }
@@ -988,7 +992,7 @@ impl App {
 
     pub fn scroll_start(&mut self) {
         self.claim_capture();
-        if !self.session.running() {
+        if !self.session.running() || self.session.device_removed {
             self.session.os_build = self.os_build_number();
             self.session.start(self.selected.as_deref());
         }
@@ -1258,6 +1262,17 @@ impl App {
     }
 
     /// Begins a capture, optionally after a delay.
+    /// Throw away a dead capture and open a fresh one.
+    ///
+    /// Offered where the device level reports a removal, because that panel
+    /// hides every other control in its section, and the section that most
+    /// often shows it is the one with no other way to start anything.
+    pub fn restart_capture(&mut self) {
+        self.claim_capture();
+        self.session.os_build = self.os_build_number();
+        self.session.start(self.selected.as_deref());
+    }
+
     /// Whether a run in progress can still be measuring anything.
     ///
     /// Both halves matter. The session can be stopped out from under a run, and

@@ -70,6 +70,23 @@ fn blocked(app: &mut App, ui: &mut egui::Ui, why: &str) {
         w::note_indent(ui, 14.0, &app.session.device_note);
     }
     ui.add_space(6.0);
+
+    // A removal is the one cause of this panel that a button can fix, and this
+    // panel has replaced every control that would otherwise offer one.
+    if app.session.device_removed {
+        ui.horizontal(|ui| {
+            if ui.button("start a new capture").clicked() {
+                app.restart_capture();
+            }
+            w::note_indent(
+                ui,
+                6.0,
+                "Opens the device again. Nothing measured before it went away is kept.",
+            );
+        });
+        ui.add_space(6.0);
+    }
+
     w::note_indent(
         ui,
         0.0,

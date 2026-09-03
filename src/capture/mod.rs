@@ -174,6 +174,10 @@ pub struct Session {
     pub device_state: LevelState,
     pub system_state: LevelState,
     pub device_note: String,
+    /// The device was taken away mid-capture. Distinct from Blocked, which also
+    /// covers a permission that no restart will fix. This one is recoverable:
+    /// the capture is dead but a new one will find the device if it came back.
+    pub device_removed: bool,
     pub system_note: String,
     /// Windows build number, supplied by the caller because the capture layer
     /// does not enumerate the host. It selects the low-level hook's timeout
@@ -268,6 +272,7 @@ impl Default for Session {
             device_state: LevelState::Idle,
             system_state: LevelState::Idle,
             device_note: String::new(),
+            device_removed: false,
             system_note: String::new(),
             os_build: 0,
             decoded: 0,
@@ -318,6 +323,7 @@ impl Session {
     #[cfg(target_os = "macos")]
     pub fn start(&mut self, device_key: Option<&str>) {
         self.stop();
+        self.device_removed = false;
         self.device.clear();
         self.system.clear();
         self.app.clear();
@@ -364,6 +370,7 @@ impl Session {
     #[cfg(windows)]
     pub fn start(&mut self, device_key: Option<&str>) {
         self.stop();
+        self.device_removed = false;
         self.device.clear();
         self.system.clear();
         self.app.clear();
@@ -539,11 +546,13 @@ impl Session {
                     self.device_state = next;
                     match next {
                         LevelState::Blocked if removed > 0 => {
+                            self.device_removed = true;
                             self.device_note = "The device was taken away while this capture \
                                  was running: unplugged, asleep, or re-enumerated by the \
                                  system. This capture cannot recover, because the connection \
                                  it holds is dead and a device that comes back is a new one. \
-                                 Start a new run."
+                                 Starting a new capture will pick it up again if it has \
+                                 reconnected."
                                 .into()
                         }
                         LevelState::Blocked => self.device_note = refusal(),
