@@ -39,6 +39,48 @@ fn cpi_recovers_a_known_count_per_inch() {
 }
 
 #[test]
+fn cpi_refuses_a_swipe_the_mouse_dropped_out_of() {
+    // The failure that sent a working mouse's CPI to 88% of nominal, run after
+    // run, on hardware that disconnects at random. Deleting a slice out of the
+    // middle of a swipe takes the same fraction off the path and the chord, so
+    // wobble stays at 1.00 and every other guard is satisfied. Only the hole in
+    // the timestamps gives it away, and until this guard existed nothing looked.
+    let sim = MouseSim { cpi: 1600.0, ..Default::default() };
+    let mut r = rng(7);
+    let traj = SwipeTraj::new(&mut r, 4.0, 0.45, 0.0);
+    let clean = sim.render(&traj, &mut r);
+    let cfg = cpi::CpiConfig::new(1600.0, 4.0);
+    assert_ne!(
+        cpi::analyze_cpi(&clean, &cfg).verdict,
+        Verdict::Inconclusive,
+        "the unbroken swipe must still be usable, or this guard is just noise"
+    );
+
+    // Drop a fifth of the swipe out of the middle, as a disconnect would.
+    let a = clean.len() * 2 / 5;
+    let b = clean.len() * 3 / 5;
+    let holed: Vec<_> = clean[..a].iter().chain(&clean[b..]).cloned().collect();
+
+    let out = cpi::analyze_cpi(&holed, &cfg);
+    assert!(
+        out.wobble < 1.15,
+        "premise of the test: the hole must be invisible to the wobble guard, was {:.3}",
+        out.wobble
+    );
+    assert!(
+        out.measured_cpi < 1600.0 * 0.95,
+        "premise of the test: the hole must deflate the reading, was {:.0}",
+        out.measured_cpi
+    );
+    assert_eq!(
+        out.verdict,
+        Verdict::Inconclusive,
+        "a swipe with a hole in it must be refused, not reported: {}",
+        out.note
+    );
+}
+
+#[test]
 fn cpi_flags_a_sensor_that_is_ten_percent_off() {
     // The device really counts at 1760 while claiming 1600.
     let sim = MouseSim { cpi: 1760.0, ..Default::default() };

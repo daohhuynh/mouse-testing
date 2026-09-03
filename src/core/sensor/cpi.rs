@@ -171,7 +171,35 @@ pub fn analyze_cpi(reports: &[Report], cfg: &CpiConfig) -> CpiResult {
                   else { Verdict::Fail };
 
     // Guards that force Inconclusive regardless of the number.
-    if out.wobble > 1.15 {
+    //
+    // The gap guard comes first because it is the only one that can see a
+    // swipe with a hole in it, and a hole is the one fault that corrupts the
+    // number while leaving every other guard content. Reports that stop partway
+    // remove distance from the count, and they remove it from the path and the
+    // chord alike, so the wobble ratio stays at 1.00, the line stays straight,
+    // the peak speed stays sane and the count stays large. The result is a CPI
+    // that reads low by exactly the fraction of the swipe that went missing,
+    // with nothing anywhere to say so. A mouse that drops off the bus for a
+    // moment mid-swipe therefore reported itself as a mouse whose sensor
+    // undercounts, over and over, which is a different fault entirely.
+    //
+    // The threshold has to clear the gaps that are not faults. A mouse sends
+    // nothing when it has nothing to send, so slow moments legitimately leave
+    // holes, and ordinary dropped polling slots leave small ones. Only a stall
+    // far longer than either counts, and it does not need to be sensitive to be
+    // useful: at a typical swipe speed 25 ms is well under one percent of the
+    // distance, while the deficit that prompted this guard was eleven.
+    let gap_limit_ns = (20.0 * median_interval_ns(seg)).max(25.0 * 1e6);
+    let worst_gap_ns = seg
+        .windows(2)
+        .map(|w| w[1].t_ns.saturating_sub(w[0].t_ns))
+        .max()
+        .unwrap_or(0) as f64;
+    if worst_gap_ns > gap_limit_ns {
+        out.verdict = Verdict::Inconclusive;
+        out.note = "reports stopped partway through this swipe, so distance is missing from \
+                    the count and the CPI would read low. Check the connection and redo it";
+    } else if out.wobble > 1.15 {
         out.verdict = Verdict::Inconclusive;
         out.note = "path length exceeds chord by >15%: swipe was curved or the mouse lifted; redo";
     } else if out.max_off_axis_counts > 0.10 * l_net {
@@ -185,6 +213,19 @@ pub fn analyze_cpi(reports: &[Report], cfg: &CpiConfig) -> CpiResult {
         out.note = "fewer than 500 counts; use a longer distance for a useful CPI estimate";
     }
     out
+}
+
+/// Median gap between consecutive reports in a segment, in nanoseconds.
+fn median_interval_ns(seg: &[super::Report]) -> f64 {
+    if seg.len() < 2 {
+        return 0.0;
+    }
+    let mut d: Vec<u64> = seg
+        .windows(2)
+        .map(|w| w[1].t_ns.saturating_sub(w[0].t_ns))
+        .collect();
+    d.sort_unstable();
+    d[d.len() / 2] as f64
 }
 
 /// Combine >= 3 repeated swipes. Uses the MEDIAN of per-trial CPI (robust to one bad
