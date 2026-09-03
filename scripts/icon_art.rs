@@ -47,6 +47,7 @@ const VARIANTS: &[(&str, &[Op])] = &[
     ("mouse-pulse", MOUSE_PULSE),
     ("invert", INVERT),
     ("rim", RIM),
+    ("rising-edge", RISING_EDGE),
 ];
 
 /// The shipped mark with a grey rim around the tile. A flat black tile has no
@@ -215,3 +216,20 @@ const CALIPER: &[Op] = &[
     Op::Line { x1: 0.500, y1: 0.380, x2: 0.500, y2: 0.500, w: 0.046, c: BLACK },
     Op::Capsule { x: 0.468, y: 0.530, w: 0.064, h: 0.110, c: BLACK },
 ];
+
+/// The runner-up, kept because it was a real contender and the choice should be
+/// reversible: a single rising edge on a white plate, which is the atomic unit
+/// of everything this program measures.
+///
+/// Not chosen. It is the more striking mark, but it is muddier than the mouse at
+/// 16 pixels, its light tile fights an interface that is black everywhere, and
+/// it needs the app's name beside it before anyone knows what it is for. An icon
+/// earns its place by being identifiable without the label.
+#[rustfmt::skip]
+const RISING_EDGE: &[Op] = &[
+    Op::Fill { c: CLEAR },
+    Op::Squircle { x: 0.098, y: 0.098, w: 0.804, h: 0.804, n: 5.0, c: BLACK },
+    Op::Squircle { x: 0.138, y: 0.138, w: 0.724, h: 0.724, n: 5.0, c: WHITE },
+    Op::Poly { pts: &[(0.22, 0.585), (0.425, 0.585), (0.425, 0.265), (0.78, 0.265), (0.78, 0.415), (0.575, 0.415), (0.575, 0.735), (0.22, 0.735)], c: BLACK },
+];
+
