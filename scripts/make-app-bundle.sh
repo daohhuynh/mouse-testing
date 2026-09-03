@@ -20,6 +20,25 @@ ID="dev.mousetesting.suite"
 
 cargo build --release
 
+# Refuse to rebuild a bundle something is running out of. Deleting an app's
+# bundle while it runs does not stop it, but it does strip its icon: the Dock
+# and Command-Tab fall back to the generic placeholder while the Finder still
+# shows the real one, which reads as a broken install rather than as a
+# self-inflicted wound. This is asked with lsof against the actual executable,
+# not by matching argv, because a process started with a relative path carries a
+# relative argv and a pattern match on the absolute path finds nothing.
+running_from() {
+  [ -x "$1/Contents/MacOS/mouse-testing" ] || return 1
+  [ -n "$(lsof -t "$1/Contents/MacOS/mouse-testing" 2>/dev/null)" ]
+}
+
+for stale in "$APP" target/mouse-testing.app; do
+  if running_from "$stale"; then
+    echo "\"$stale\" is running. Quit it first, then run this again." >&2
+    exit 1
+  fi
+done
+
 # Sweep away bundles left by an earlier name. One of these outlived a rename
 # once and took the Input Monitoring grant with it.
 rm -rf target/mouse-testing.app

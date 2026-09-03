@@ -28,11 +28,21 @@ if [ ! -d "$SRC" ]; then
   exit 1
 fi
 
+# Is anything running out of this bundle? Asked with lsof against the actual
+# executable rather than by matching argv: a process started with a relative
+# path carries a relative argv, so a pattern match on the absolute path silently
+# finds nothing, and a match on the tail alone cannot tell this bundle's copy
+# from the other one.
+running_from() {
+  [ -x "$1/Contents/MacOS/mouse-testing" ] || return 1
+  [ -n "$(lsof -t "$1/Contents/MacOS/mouse-testing" 2>/dev/null)" ]
+}
+
 REPLACING=no
 if [ -d "$DEST" ]; then
   REPLACING=yes
   # A running app cannot be replaced cleanly, and the copy would half-succeed.
-  if pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1; then
+  if running_from "$DEST"; then
     echo "\"$NAME\" is running. Quit it first, then run this again." >&2
     exit 1
   fi
@@ -62,7 +72,20 @@ LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 # about which app it is describing, and a STALE one is worse: the permission is
 # keyed on the code hash, so an older copy's row can never match the installed
 # app, and the symptom is a toggle that is switched on and does nothing.
-rm -rf "$SRC"
+#
+# Never while something is running out of it, though. An app whose bundle is
+# deleted underneath it keeps running but loses its icon, falling back to the
+# generic placeholder in the Dock and in Command-Tab while the Finder still
+# shows the real one. That looks exactly like a broken install and is not
+# obviously self-inflicted.
+if running_from "$SRC"; then
+  echo
+  echo "note: something is still running from $SRC, so it was left in place."
+  echo "      quit it and re-run this to tidy up. Two bundles with one"
+  echo "      identifier make the Input Monitoring row ambiguous."
+else
+  rm -rf "$SRC"
+fi
 
 if [ "$REPLACING" = yes ]; then
   # Only needed when REPLACING an app: macOS caches the icon against the bundle,
