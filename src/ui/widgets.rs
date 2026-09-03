@@ -211,3 +211,94 @@ pub fn boxed<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
         .show(ui, add)
         .inner
 }
+
+/// Bar chart of a distribution.
+///
+/// Bins are aggregated down to at most one per pixel column before drawing.
+/// Without that, a 120-bin distribution in a 90 pixel panel draws overlapping
+/// one-pixel bars and silently misrepresents the shape.
+pub fn histogram(
+    ui: &mut egui::Ui,
+    bins: &[(f64, u32)],
+    height: f32,
+    marks: &[(f64, &str)],
+    x_label: &str,
+) -> egui::Response {
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, height), Sense::hover());
+    if !ui.is_rect_visible(rect) || bins.is_empty() {
+        return resp;
+    }
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, theme::NO_ROUND, theme::BLACK);
+    p.rect_stroke(
+        rect,
+        theme::NO_ROUND,
+        egui::Stroke::new(1.0, theme::GREY_LINE),
+        egui::StrokeKind::Inside,
+    );
+
+    let plot = rect.shrink2(egui::vec2(1.0, 1.0));
+    let cols = (plot.width().floor() as usize).max(1);
+    let per_col = (bins.len() as f32 / cols as f32).ceil().max(1.0) as usize;
+    let mut agg: Vec<u32> = Vec::with_capacity(cols);
+    let mut i = 0;
+    while i < bins.len() {
+        let end = (i + per_col).min(bins.len());
+        agg.push(bins[i..end].iter().map(|(_, c)| *c).max().unwrap_or(0));
+        i = end;
+    }
+    let max = agg.iter().copied().max().unwrap_or(1).max(1) as f32;
+    let bw = plot.width() / agg.len() as f32;
+    for (i, &c) in agg.iter().enumerate() {
+        if c == 0 {
+            continue;
+        }
+        let h = (c as f32 / max) * plot.height();
+        let x0 = plot.left() + i as f32 * bw;
+        let bar = egui::Rect::from_min_max(
+            egui::pos2(x0, plot.bottom() - h),
+            egui::pos2(x0 + bw.max(1.0), plot.bottom()),
+        );
+        p.rect_filled(bar, theme::NO_ROUND, theme::GREY_HI);
+    }
+
+    // Vertical guides, e.g. at one and two nominal intervals.
+    let x_max = bins.last().map(|(c, _)| *c).unwrap_or(1.0);
+    let font = TextStyle::Small.resolve(ui.style());
+    for (at, label) in marks {
+        if *at <= 0.0 || *at > x_max {
+            continue;
+        }
+        let x = plot.left() + (*at / x_max) as f32 * plot.width();
+        p.line_segment(
+            [egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())],
+            egui::Stroke::new(1.0, theme::GREY_MID),
+        );
+        p.text(
+            egui::pos2(x + 2.0, plot.top() + 1.0),
+            egui::Align2::LEFT_TOP,
+            label,
+            font.clone(),
+            theme::GREY_TEXT,
+        );
+    }
+
+    if !x_label.is_empty() {
+        p.text(
+            egui::pos2(plot.right() - 2.0, plot.bottom() - 1.0),
+            egui::Align2::RIGHT_BOTTOM,
+            x_label,
+            font,
+            theme::GREY_TEXT,
+        );
+    }
+    resp
+}
+
+/// A bracketed state tag, for use inline.
+pub fn tag(ui: &mut egui::Ui, level: Level, text: &str) {
+    ui.add(egui::Label::new(
+        RichText::new(format!("[{}] {}", level.tag(), text)).color(level.color()),
+    ));
+}

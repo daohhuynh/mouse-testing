@@ -297,6 +297,30 @@ pub fn foreign_taps() -> Vec<ForeignTap> {
         .collect()
 }
 
+/// System-wide count of delivered motion events, from the OS's own counters.
+///
+/// Needs no permission, which makes it the control that separates "nothing
+/// moved" from "the capture is broken". Without it, a level reading zero is
+/// indistinguishable from a level that is not working, and reporting zero
+/// silently is the one failure this program must not have.
+pub fn motion_event_count() -> u64 {
+    let mut total: u64 = 0;
+    for t in [
+        kCGEventMouseMoved,
+        kCGEventLeftMouseDragged,
+        kCGEventRightMouseDragged,
+        kCGEventOtherMouseDragged,
+    ] {
+        // The counter is a u32 and wraps; callers difference it with
+        // wrapping arithmetic over a short window.
+        total = total
+            .wrapping_add(unsafe {
+                CGEventSourceCounterForEventType(kCGEventSourceStateHIDSystemState, t)
+            } as u64);
+    }
+    total
+}
+
 /// Silences the unused-import warning when `cf` is only used by siblings.
 #[allow(unused)]
 fn _keep(t: CFTypeRef) -> Option<String> {

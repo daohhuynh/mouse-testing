@@ -6,7 +6,30 @@
 use crate::app::Survey;
 use crate::platform::Link;
 
-pub fn run() {
+/// Writes the report to `path`, or to stdout when `path` is None.
+///
+/// Writing to a file matters on macOS: the report has to be produced from
+/// inside the app bundle for the permission state to be the bundle's own, and a
+/// bundle launched with `open` has no terminal to print to.
+pub fn run(path: Option<&str>) {
+    let mut buf = String::new();
+    render(&mut buf);
+    match path {
+        Some(p) => {
+            if let Err(e) = std::fs::write(p, &buf) {
+                eprintln!("could not write {p}: {e}");
+            }
+        }
+        None => print!("{buf}"),
+    }
+}
+
+fn render(out: &mut String) {
+    use std::fmt::Write as _;
+    macro_rules! line {
+        ($($a:tt)*) => { let _ = writeln!(out, $($a)*); };
+    }
+
     let first = Survey::run(None);
     let selected = first
         .devices
@@ -16,37 +39,37 @@ pub fn run() {
         .map(|d| d.key.clone());
     let s = Survey::run(selected.as_deref());
 
-    println!("== host ==");
-    println!("  os            {} ({})", s.env.os, s.env.os_build);
-    println!("  architecture  {}", s.env.arch);
-    println!("  processor     {}", s.env.cpu);
-    println!("  cores         {}", s.env.cores);
+    line!("== host ==");
+    line!("  os            {} ({})", s.env.os, s.env.os_build);
+    line!("  architecture  {}", s.env.arch);
+    line!("  processor     {}", s.env.cpu);
+    line!("  cores         {}", s.env.cores);
     for (k, v) in &s.env.facts {
-        println!("  {:<13} {}", k, v);
+        line!("  {:<13} {}", k, v);
     }
-    println!(
+    line!(
         "  clock         {}, {:.1} ns resolution, {:.1} ns per read",
         s.env.timer.name, s.env.timer.resolution_ns, s.env.timer.cost_ns
     );
 
-    println!("\n== devices ({}) ==", s.devices.len());
+    line!("\n== devices ({}) ==", s.devices.len());
     for d in &s.devices {
         let mark = if Some(&d.key) == selected.as_ref() {
             ">"
         } else {
             " "
         };
-        println!("{mark} {}", d.name);
-        println!("    ids         {}", d.ids());
-        println!(
+        line!("{mark} {}", d.name);
+        line!("    ids         {}", d.ids());
+        line!(
             "    transport   {}",
             d.transport.clone().unwrap_or_else(|| "-".into())
         );
-        println!(
+        line!(
             "    usage       page {:?} usage {:?}",
             d.usage_page, d.usage
         );
-        println!(
+        line!(
             "    interval    {}",
             match (d.advertised_interval_us, d.advertised_interval_trusted) {
                 (Some(us), true) => format!("{us} us advertised"),
@@ -54,7 +77,7 @@ pub fn run() {
                 (None, _) => "not reported".into(),
             }
         );
-        println!(
+        line!(
             "    link        {}",
             match &d.topology.link {
                 Link::Usb { hub_depth, speed } => format!(
@@ -71,34 +94,34 @@ pub fn run() {
             }
         );
         if !d.topology.chain.is_empty() {
-            println!("    chain       {}", d.topology.chain.join(" < "));
+            line!("    chain       {}", d.topology.chain.join(" < "));
         }
         for (k, v) in &d.extra {
-            println!("    {:<11} {}", k, v);
+            line!("    {:<11} {}", k, v);
         }
     }
 
-    println!("\n== access ==");
+    line!("\n== access ==");
     for i in &s.access.items {
-        println!(
+        line!(
             "  [{}] {:<8} {}",
             i.state.level().tag(),
             i.tier.map(|t| t.short()).unwrap_or(""),
             i.name
         );
         for line in i.detail.lines() {
-            println!("        {line}");
+            line!("        {line}");
         }
     }
 
-    println!("\n== measurement validity ==");
+    line!("\n== measurement validity ==");
     if s.env.warnings.is_empty() {
-        println!("  [PASS] nothing detected that would invalidate timing measurements");
+        line!("  [PASS] nothing detected that would invalidate timing measurements");
     }
     for wn in &s.env.warnings {
-        println!("  [{}] {}", wn.level.level().tag(), wn.title);
+        line!("  [{}] {}", wn.level.level().tag(), wn.title);
         for line in textwrap(&wn.detail, 76) {
-            println!("        {line}");
+            line!("        {line}");
         }
     }
 }
@@ -119,4 +142,93 @@ fn textwrap(s: &str, width: usize) -> Vec<String> {
         out.push(line);
     }
     out
+}
+
+/// Text report of a finished capture, for unattended verification.
+pub fn capture_report(app: &crate::app::App) -> String {
+    use crate::capture::LevelState;
+    use crate::platform::Tier;
+    use std::fmt::Write as _;
+    let mut o = String::new();
+    let s = &app.session;
+    let r = &app.poll_result;
+
+    let _ = writeln!(o, "== capture ==");
+    let _ = writeln!(o, "  elapsed        {:.2} s", s.elapsed_s());
+    let _ = writeln!(
+        o,
+        "  descriptor     {} report(s) decoded, {} without a field map",
+        s.decoded, s.undecoded
+    );
+    let _ = writeln!(
+        o,
+        "  control        {} system motion event(s) counted by the OS over this run",
+        s.control_motion
+    );
+    if s.control_motion == 0 {
+        let _ = writeln!(
+            o,
+            "                 nothing moved during this run, so every level reading zero \
+             says nothing about whether it works"
+        );
+    }
+
+    for tier in Tier::ALL {
+        let series = s.tier_series(tier);
+        let state = match tier {
+            Tier::Device => s.device_state,
+            Tier::System => s.system_state,
+            Tier::App => {
+                if series.total > 0 {
+                    LevelState::Live
+                } else {
+                    LevelState::Idle
+                }
+            }
+        };
+        let sustained = if tier == Tier::App {
+            s.app_hz()
+        } else {
+            series.sustained_hz()
+        };
+        let _ = writeln!(
+            o,
+            "\n  {:<7} {:?}  events {:<7} sustained {:>9.2} Hz  buffer losses {}",
+            tier.short(),
+            state,
+            series.total,
+            sustained,
+            series.ring_drops
+        );
+    }
+    let note = if !s.device_note.is_empty() {
+        s.device_note.clone()
+    } else {
+        String::new()
+    };
+    if !note.is_empty() {
+        let _ = writeln!(o, "  device note    {note}");
+    }
+    if !s.system_note.is_empty() {
+        let _ = writeln!(o, "  system note    {}", s.system_note);
+    }
+
+    let _ = writeln!(o, "\n== device level interval analysis ==");
+    let _ = writeln!(o, "  verdict        {:?}", r.verdict);
+    let _ = writeln!(o, "  intervals      {} total, {} judged", r.n_intervals, r.n_analyzable);
+    let _ = writeln!(o, "  nominal        {:.1} us  ({:.1} Hz)", r.nominal_ns / 1000.0, r.nominal_hz);
+    let _ = writeln!(o, "  snapped        {:?}", r.snapped_hz);
+    let _ = writeln!(o, "  jitter sigma   {:.2} us", r.jitter_sigma_ns / 1000.0);
+    let _ = writeln!(o, "  tolerance      {:.3}", r.tol_rel);
+    let _ = writeln!(o, "  reliable       nominal {}  multiples {}", r.nominal_reliable, r.multiple_classification_valid);
+    let _ = writeln!(o, "  min/p50/p99    {:.1} / {:.1} / {:.1} us", r.min_ns / 1000.0, r.p50_ns / 1000.0, r.p99_ns / 1000.0);
+    let _ = writeln!(o, "  p999/max       {:.1} / {:.1} us", r.p999_ns / 1000.0, r.max_ns / 1000.0);
+    let _ = writeln!(o, "  normal/fast    {} / {}", r.n_normal, r.n_fast);
+    let _ = writeln!(o, "  dropped        {} slot(s) in {} event(s), {:.4}%", r.n_dropped_slots, r.n_drop_events, r.drop_rate * 100.0);
+    let _ = writeln!(o, "  late           {} ({:.4}%)", r.n_slow, r.slow_rate * 100.0);
+    let _ = writeln!(o, "  idle           {}", r.n_idle);
+    if !r.note.is_empty() {
+        let _ = writeln!(o, "  note           {}", r.note);
+    }
+    o
 }
