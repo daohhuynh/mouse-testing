@@ -100,6 +100,23 @@ steps, on both the vertical wheel and a tilt wheel if there is one.
 
 **SESSION** logs every event, exports the raw data and a readable summary, and
 loads a previous export to re-analyse or compare against the current session.
+It also holds the battery: which measurements count as part of this
+configuration, and what each of them concluded.
+
+The battery exists because the question people actually arrive with is bigger
+than any single section. *I changed a setting, what did that do?* needs the
+whole set of results from before the change beside the whole set from after,
+and until now the verdicts lived only on screen, so a comparison could reach
+the timing figures and nothing else. They are written into the export, one line
+each, and reload with it.
+
+The set is chosen rather than assumed. A summary that only ever said "not
+measured this session" could not tell a test the user never reached from one
+they deliberately left out, and in a comparison those mean opposite things: the
+first is a hole in the evidence, the second is the shape of the experiment.
+Leaving a measurement out is recorded as a decision, and a row where one side
+was never measured says so rather than going quiet, because silence in a
+comparison reads as agreement.
 
 ### The A/B comparison
 
@@ -692,7 +709,26 @@ Three numbers here are worth checking before you trust anything else:
   means that level is not collecting: usually no mouse picked on DEVICE, the
   wrong mouse picked, or a missing permission.
 
-To compare against a previous run, load the older `session-....csv` and pick a
+**the battery** is the list of measurements that count as part of this
+configuration. All of them start switched on; click one to leave it out.
+Only the ones switched on are written to the export and compared, so a test you
+deliberately skipped does not come back later looking like a test that went
+missing. Each row says whether it has been measured yet and what it found.
+
+Load an older export and you get **results, loaded against now**: every
+measurement's verdict on both sides, with the figures underneath, and a row
+marked `CHANGED` when the verdict moved. A verdict that did not move can still
+have travelled a long way inside its band, which is what the two figures are
+for. A row where one side says "not measured" is not agreement: one of the two
+configurations was never asked.
+
+That is the honest way to answer "what did this setting do", and it is
+deliberately not the A/B section. A/B exists because your own technique wanders
+more than the effect you are hunting, which is true of clicking and false of
+everything the device reports directly. Comparing two measured numbers needs no
+statistics; it needs both numbers written down.
+
+To compare the raw timing as well, load the older `session-....csv` and pick a
 level. Load the `.csv` rather than the `.txt` written beside it; the summary
 file is for reading, and the app will refuse it. What you get back is a timing
 comparison: event counts, rates, dropped reports, motion, interval figures and
@@ -873,8 +909,11 @@ because an app bundle launched from the Finder has no working directory you
 could guess.
 
 `session-<stamp>.csv` holds every captured event, with the device, the host,
-the clock's resolution and read cost, and every environment warning that was
-live at capture time carried in `#` comment lines at the top. That header is
+the clock's resolution and read cost, every environment warning that was live at
+capture time, and the verdict of each measurement in the battery, carried in `#`
+comment lines at the top. A result line this build does not understand is
+skipped rather than failing the load, so an export written by a later version
+still opens. That header is
 the point: someone opening the file next month cannot re-derive that an event
 tap was filtering input while it was recorded. The file loads back into the app
 for re-analysis and comparison, and opens directly in a spreadsheet or with

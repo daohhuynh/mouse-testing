@@ -230,6 +230,21 @@ pub fn nav_row(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response 
 /// side by side. `nav_row` takes the full available width, which is right for a
 /// vertical list and wrong for a horizontal one: the first chip would eat the
 /// row and the rest would be pushed off the panel.
+/// The colour a verdict is drawn in.
+///
+/// Inconclusive is grey rather than amber: the theme's own note is that a
+/// disabled capability is not a failing one, and a measurement that refused to
+/// answer is saying nothing about the mouse.
+pub fn level_of(v: crate::core::sensor::Verdict) -> Level {
+    use crate::core::sensor::Verdict;
+    match v {
+        Verdict::Pass => Level::Pass,
+        Verdict::Warn => Level::Warn,
+        Verdict::Fail => Level::Fail,
+        Verdict::Inconclusive => Level::Off,
+    }
+}
+
 pub fn chip(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
     let w = mono_width(ui, text.chars().count() + 2);
     let h = row_height(ui) + 4.0;

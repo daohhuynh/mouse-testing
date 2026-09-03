@@ -88,6 +88,14 @@ pub struct Meta {
     /// numbers were untrustworthy.
     pub warnings: Vec<String>,
     pub duration_s: f64,
+    /// What each measurement in the battery concluded.
+    ///
+    /// The events alone cannot carry this. Most of the verdicts come from a
+    /// protocol the user followed with their hands, and nothing in a list of
+    /// motion reports says which ten seconds were the angle-snapping stroke.
+    /// Recording them is what lets two configurations be compared rather than
+    /// just two recordings.
+    pub results: Vec<crate::core::battery::Record>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -127,6 +135,9 @@ impl SessionLog {
         let _ = writeln!(s, "# duration_s: {}", m.duration_s);
         for warning in &m.warnings {
             let _ = writeln!(s, "# warning: {}", escape(warning));
+        }
+        for r in &m.results {
+            let _ = writeln!(s, "# result: {}", escape(&r.encode()));
         }
         s.push_str("# edge is 1 for press, 0 for release, and empty for motion rows\n");
         s.push_str(HEADER);
@@ -197,6 +208,14 @@ impl SessionLog {
                     "clock_cost_ns" => m.clock_cost_ns = v.parse().unwrap_or(0.0),
                     "duration_s" => m.duration_s = v.parse().unwrap_or(0.0),
                     "warning" => m.warnings.push(v.into()),
+                    "result" => {
+                        // A line this build cannot parse is skipped rather than
+                        // failing the load: an export from a later version must
+                        // still open here, minus what it does not understand.
+                        if let Some(r) = crate::core::battery::Record::decode(v) {
+                            m.results.push(r);
+                        }
+                    }
                     _ => {}
                 }
                 continue;
@@ -326,6 +345,18 @@ mod tests {
                 claimed_cpi: "1600".into(),
                 warnings: vec!["running under a hypervisor".into()],
                 duration_s: 12.5,
+                results: vec![
+                    crate::core::battery::Record {
+                        key: "polling".into(),
+                        verdict: Some(crate::core::sensor::Verdict::Pass),
+                        headline: "1000.2 Hz nominal".into(),
+                    },
+                    crate::core::battery::Record {
+                        key: "cps".into(),
+                        verdict: None,
+                        headline: "7.40 CPS sustained".into(),
+                    },
+                ],
             },
             events: vec![
                 Event { t_ns: 1_000_000, level: Level::Device, dx: 3, dy: -2, wheel: 0,

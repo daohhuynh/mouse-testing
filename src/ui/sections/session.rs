@@ -10,6 +10,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     current(app, ui);
     ui.add_space(10.0);
+    battery(app, ui);
+    ui.add_space(10.0);
     export(app, ui);
     ui.add_space(10.0);
     load(app, ui);
@@ -99,6 +101,58 @@ fn current(app: &mut App, ui: &mut egui::Ui) {
              computed from a series with a hole in it is wrong and there is no way to tell \
              from the numbers alone.",
         );
+    });
+}
+
+/// Which measurements count as part of this configuration.
+///
+/// The list is the experiment. A summary that only ever said "not measured this
+/// session" could not tell a test the user never reached from one they left out
+/// on purpose, and in a comparison those mean opposite things: the first is a
+/// hole in the evidence, the second is the shape of the experiment.
+fn battery(app: &mut App, ui: &mut egui::Ui) {
+    use crate::core::battery;
+    w::subheading(ui, "the battery");
+    w::boxed(ui, |ui| {
+        w::note_indent(
+            ui,
+            0.0,
+            "The measurements that belong to this configuration. Highlighted ones are in; \
+             click one to leave it out. Only those that are in are written to the export and \
+             compared against a previous one, so a test you deliberately skipped does not \
+             come back later looking like a test that went missing.",
+        );
+        ui.add_space(6.0);
+        for item in battery::ITEMS {
+            let on = !app.battery_off.contains(item.key);
+            let have = battery::measure(app, item.key);
+            ui.horizontal(|ui| {
+                // Padded to one width so the column beside it lines up. The
+                // rest of the app holds its columns still whatever the value,
+                // and a ragged list here would read as a different program.
+                if w::chip(ui, on, &format!("{:<22}", item.label)).clicked() {
+                    if on {
+                        app.battery_off.insert(item.key.to_string());
+                    } else {
+                        app.battery_off.remove(item.key);
+                    }
+                }
+                ui.add_space(6.0);
+                match (&have, on) {
+                    (_, false) => {
+                        w::fixed_value(ui, "left out", 12, L::Off);
+                    }
+                    (Some(r), true) => {
+                        let lvl = r.verdict.map(w::level_of).unwrap_or(L::Info);
+                        w::fixed_value(ui, "measured", 12, lvl);
+                        w::note_indent(ui, 2.0, &r.headline);
+                    }
+                    (None, true) => {
+                        w::fixed_value(ui, "not yet", 12, L::Warn);
+                    }
+                }
+            });
+        }
     });
 }
 
@@ -224,6 +278,9 @@ fn compare(app: &mut App, ui: &mut egui::Ui) {
     });
 
     ui.add_space(10.0);
+    results_side_by_side(app, ui);
+
+    ui.add_space(10.0);
     w::subheading(ui, "side by side");
     w::boxed(ui, |ui| {
         ui.horizontal(|ui| {
@@ -332,4 +389,96 @@ fn row(ui: &mut egui::Ui, label: &str, now: f64, then: f64, dp: usize, unit: &st
             w::fixed_label(ui, unit, unit.chars().count().max(3), L::Off);
         }
     });
+}
+
+/// Every measurement's verdict, before and after, which is the question a
+/// person changing a setting actually has.
+///
+/// The timing table below this one compares two recordings. This compares two
+/// configurations, and it is the only place in the app where a change to the
+/// mouse can be seen as a change to the mouse rather than as two sets of
+/// numbers a person has to hold in their head.
+fn results_side_by_side(app: &mut App, ui: &mut egui::Ui) {
+    use crate::core::battery;
+    let Some(loaded) = app.data.loaded.as_ref() else {
+        return;
+    };
+    let before = loaded.meta.results.clone();
+    let after = battery::snapshot(app);
+    let rows = battery::compare(&before, &after);
+
+    w::subheading(ui, "results, loaded against now");
+    w::boxed(ui, |ui| {
+        if rows.is_empty() {
+            w::note_indent(
+                ui,
+                0.0,
+                "Neither the loaded file nor this session carries any measurement results. \
+                 An export written by a version of this app older than the battery has \
+                 none, and there is nothing to compare.",
+            );
+            return;
+        }
+        ui.horizontal(|ui| {
+            w::fixed_label(ui, "", 22, L::Off);
+            w::fixed_label(ui, "loaded", 14, L::Off);
+            w::fixed_label(ui, "now", 14, L::Off);
+        });
+        for row in &rows {
+            let label = battery::label_for(&row.key).to_string();
+            ui.horizontal(|ui| {
+                w::fixed_label(ui, &label, 22, L::Info);
+                for side in [&row.before, &row.after] {
+                    match side {
+                        Some(r) => {
+                            let (txt, lvl) = match r.verdict {
+                                Some(v) => (verdict_word(v), w::level_of(v)),
+                                // A measurement with no verdict is not a blank:
+                                // CPS and A/B report numbers, and showing them
+                                // as absent would read as never run.
+                                None => ("recorded", L::Info),
+                            };
+                            w::fixed_value(ui, txt, 14, lvl);
+                        }
+                        // Not "pass", not blank. A side that never measured this
+                        // has said nothing, and silence in a comparison reads as
+                        // agreement unless it is spelled out.
+                        None => {
+                            w::fixed_value(ui, "not measured", 14, L::Off);
+                        }
+                    }
+                }
+                if row.changed() {
+                    w::fixed_value(ui, "CHANGED", 9, L::Warn);
+                }
+            });
+            // The figures underneath, because a verdict that stayed the same can
+            // still have moved a long way inside its band.
+            let b = row.before.as_ref().map(|r| r.headline.as_str()).unwrap_or("-");
+            let a = row.after.as_ref().map(|r| r.headline.as_str()).unwrap_or("-");
+            if b != "-" || a != "-" {
+                w::note_indent(ui, 4.0, &format!("loaded: {b}"));
+                w::note_indent(ui, 4.0, &format!("now:    {a}"));
+            }
+            ui.add_space(2.0);
+        }
+        w::note_indent(
+            ui,
+            0.0,
+            "A row marked CHANGED is one whose verdict moved. A verdict that did not move \
+             can still have travelled inside its band, which is what the two figures under \
+             each row are for. Rows where one side says \"not measured\" are not agreement: \
+             one of the two configurations was never asked.",
+        );
+    });
+}
+
+fn verdict_word(v: crate::core::sensor::Verdict) -> &'static str {
+    use crate::core::sensor::Verdict;
+    match v {
+        Verdict::Pass => "pass",
+        Verdict::Warn => "warn",
+        Verdict::Fail => "fail",
+        Verdict::Inconclusive => "inconclusive",
+    }
 }

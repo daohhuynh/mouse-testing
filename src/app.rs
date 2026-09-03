@@ -101,6 +101,12 @@ pub struct App {
     /// Set when a run ended on its own, so the section can say so rather than
     /// leaving the user wondering who pressed stop.
     pub poll_auto_stopped: bool,
+    /// Measurements switched OUT of the battery, by key.
+    ///
+    /// Held as the exclusions rather than the inclusions so that a measurement
+    /// added to the app in a later version is in the battery by default. The
+    /// other way round, every existing user would silently stop recording it.
+    pub battery_off: std::collections::BTreeSet<String>,
     /// Set while a delayed start is pending, so the user can put this machine's
     /// own pointer down and pick up the mouse under test.
     countdown: Option<(Instant, f64)>,
@@ -438,6 +444,7 @@ impl App {
             poll_auto_stop: true,
             poll_armed: false,
             poll_auto_stopped: false,
+            battery_off: std::collections::BTreeSet::new(),
             countdown: None,
             last_analysis: None,
             auto_capture: None,
@@ -866,6 +873,7 @@ impl App {
                 .map(|w| format!("{}: {}", w.title, w.detail))
                 .collect(),
             duration_s: self.session.elapsed_s(),
+            results: crate::core::battery::snapshot(self),
         }
     }
 

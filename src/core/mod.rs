@@ -1,5 +1,6 @@
 pub mod ab;
 pub mod abstats;
+pub mod battery;
 pub mod clock;
 pub mod cps;
 pub mod debounce;
