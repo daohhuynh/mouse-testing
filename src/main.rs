@@ -91,6 +91,7 @@ fn main() -> eframe::Result {
                 .and_then(|j| args.get(j + 1).cloned())?;
             Some((secs, out))
         });
+    let ab_demo = args.iter().any(|a| a == "--ab-demo");
     let shot = std::env::args()
         .skip_while(|a| a != "--screenshot")
         .nth(1)
@@ -103,6 +104,9 @@ fn main() -> eframe::Result {
             app.screenshot = shot;
             if let Some(name) = section {
                 app.select_section(&name);
+            }
+            if ab_demo {
+                app.ab_demo();
             }
             if let Some((secs, out)) = auto.clone() {
                 app.auto_capture = Some(app::AutoCapture {
