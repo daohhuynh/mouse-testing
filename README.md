@@ -523,14 +523,25 @@ spurious extra click is counted. Run CLICKS first.
 
 ### A/B: did that setting actually help?
 
-**What it answers.** You changed a setting on the mouse: how often it reports,
-or its debounce time, which is how long the mouse ignores a button after a
-press so that one press cannot count as two, or a click mode. You cannot tell
-whether the change really helped or whether you just had a good run. This is
-the part that answers that honestly.
+**What it answers.** You changed a setting whose effect you can only feel, such
+as debounce time, which is how long the mouse ignores a button after a press so
+that one press cannot count as two. You cannot tell whether the change really
+helped or whether you just had a good run. This is the part that answers that
+honestly.
 
-**What you do.** Name the two settings, for example `debounce 4 ms` and
-`debounce 0 ms`. Under "what to measure", pick one of two:
+**What does not belong here.** A setting another section measures directly.
+Change the polling rate and POLLING reads it back to a fraction of a percent;
+change CPI, angle snapping, motion smoothing or the scroll mode and SENSOR or
+SCROLL do the same. For those, run the test, change the setting, run it again,
+and compare the two numbers. The apparatus below exists because *you* are the
+measuring instrument and your own technique wanders more than the effect does.
+Wrapping a direct device measurement in it would add ceremony, not rigour.
+
+**What you do.** Name the two settings. Name the whole
+configuration rather than only the part you are changing, so the export still
+means something later: the app's own example is `1000 Hz, debounce 4 ms` versus
+`1000 Hz, debounce 0 ms`, where the rate is written down because it stayed the
+same, not because it is being compared. Under "what to measure", pick one of two:
 
 - **click rate** asks which setting lets you click faster. Click as fast as you
   can keep up for the whole trial; being consistent beats a burst at the start.

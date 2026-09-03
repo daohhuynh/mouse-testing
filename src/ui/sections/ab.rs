@@ -27,6 +27,17 @@ fn setup(app: &mut App, ui: &mut egui::Ui) {
          two settings instead of running all of one and then all of the other, and nothing \
          about the result is shown until the whole run is over.",
     );
+    ui.add_space(4.0);
+    w::note_indent(
+        ui,
+        0.0,
+        "A setting another section can measure directly does not belong here. Polling rate, \
+         CPI, angle snapping, motion smoothing and scroll behaviour are all read straight off \
+         the device in POLLING, SENSOR and SCROLL, where the change is hundreds of times \
+         larger than the measurement error and no statistics are needed to see it. Run those \
+         twice and compare the numbers. This section is for what only your hand can detect, \
+         such as debounce.",
+    );
 
     ui.add_space(8.0);
     w::subheading(ui, "the two conditions");
@@ -50,8 +61,10 @@ fn setup(app: &mut App, ui: &mut egui::Ui) {
         w::note_indent(
             ui,
             0.0,
-            "Write down exactly what you will change, so the export means something in a \
-             month's time.",
+            "Name the whole configuration, not only the part you are changing, so the export \
+             still means something in a month. In the example only the debounce differs: the \
+             polling rate is written down because it stayed the same, not because it is being \
+             compared.",
         );
     });
 
