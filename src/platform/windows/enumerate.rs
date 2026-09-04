@@ -145,6 +145,44 @@ pub fn enumerate() -> Vec<DeviceInfo> {
     unsafe { enumerate_inner() }
 }
 
+/// The raw input handle for a selection key, or `None` if that device is not
+/// attached right now.
+///
+/// Raw input is registered per process, not per device, so every mouse arrives
+/// on one stream and the only way to measure the one the user picked is to
+/// compare each report's `hDevice` against this. The handle is not stable
+/// across an unplug, which is why it is resolved when a capture starts rather
+/// than stored with the device list.
+pub fn handle_for_key(key: &str) -> Option<u64> {
+    let want = enumerate().into_iter().find(|d| d.key == key)?.raw_path?;
+    unsafe { handle_for_path(&want) }
+}
+
+unsafe fn handle_for_path(path: &str) -> Option<u64> {
+    let cb = size_of::<RAWINPUTDEVICELIST>() as u32;
+    let mut count: u32 = 0;
+    if GetRawInputDeviceList(null_mut(), &mut count, cb) == u32::MAX {
+        return None;
+    }
+    let mut list: Vec<RAWINPUTDEVICELIST> = Vec::new();
+    for _ in 0..4 {
+        list.resize(count as usize, zeroed());
+        let mut n = count;
+        let got = GetRawInputDeviceList(list.as_mut_ptr(), &mut n, cb);
+        if got != u32::MAX {
+            list.truncate(got as usize);
+            break;
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(122) {
+            return None;
+        }
+        count = n;
+    }
+    list.iter()
+        .find(|e| device_name(e.hDevice).as_deref() == Some(path))
+        .map(|e| e.hDevice as usize as u64)
+}
+
 unsafe fn enumerate_inner() -> Vec<DeviceInfo> {
     let cb = size_of::<RAWINPUTDEVICELIST>() as u32;
     let mut count: u32 = 0;

@@ -248,11 +248,9 @@ pub struct Session {
     scratch: Vec<Sample>,
     /// Origin so displayed times start at zero.
     origin_ticks: Option<u64>,
-    /// Enumeration key of the device under test, where the platform needs it
-    /// to filter a shared stream.
-    #[allow(dead_code)]
-    filter_key: Option<String>,
-    /// Platform device handle of the device under test, resolved from the key.
+    /// Platform device handle of the device under test, resolved from the key
+    /// when the capture starts. Windows delivers every mouse on one raw input
+    /// stream, and this is what picks one out of it.
     #[allow(dead_code)]
     filter_device: Option<u64>,
 }
@@ -315,7 +313,6 @@ impl Default for Session {
             hook_consumer: None,
             scratch: Vec::with_capacity(4096),
             origin_ticks: None,
-            filter_key: None,
             filter_device: None,
         }
     }
@@ -389,11 +386,29 @@ impl Session {
         self.origin_ticks = None;
         // Raw input is registered per process rather than per device, so the
         // stream carries every mouse and is filtered by device handle here.
-        self.filter_key = device_key.map(str::to_string);
+        //
+        // The handle has to be resolved now. It is a live raw input handle, not
+        // an identifier that survives an unplug, so it cannot come from the
+        // device list the picker was built from. This assignment is the whole
+        // reason the device level on Windows measures one mouse: without it the
+        // filter below never engages and every attached pointing device is
+        // counted together, which quietly inflates polling and corrupts CPI.
+        self.filter_device = device_key.and_then(crate::platform::windows::enumerate::handle_for_key);
 
         let raw = RawInputCapture::start(1 << 17);
         let st = raw.status();
-        if st.registered {
+        if device_key.is_some() && self.filter_device.is_none() {
+            // Refused rather than run unfiltered. Capturing every mouse under
+            // the name of the one that was picked is worse than not capturing:
+            // the numbers look ordinary and describe the wrong thing.
+            self.device_state = LevelState::Blocked;
+            self.device_note = "The selected device is no longer attached, so raw input has \
+                 no handle to filter on. Pick it again in DEVICE once it is back."
+                .into();
+        } else if device_key.is_none() {
+            self.device_state = LevelState::Blocked;
+            self.device_note = "No device selected.".into();
+        } else if st.registered {
             self.device_state = LevelState::Waiting;
             self.device_note.clear();
         } else {
@@ -669,11 +684,21 @@ impl Session {
                 // Registration already asked for these notifications; nothing
                 // read them, so an unplugged mouse mid-run just went quiet.
                 //
-                // A removal counts against this level whenever the level was
-                // receiving anything, since raw input has no per-device filter
-                // in force (`filter_device` is never assigned), which makes the
-                // device level here the sum of every mouse rather than one.
-                let removed = self.raw.as_ref().map(|r| r.removed().0).unwrap_or(0);
+                // Only a removal of the device under test counts. Raw input
+                // reports every unplug in the machine, and with the filter in
+                // force the others have nothing to do with this capture:
+                // blocking the level because an unrelated keyboard was pulled
+                // would end a good run and tell the user their mouse died.
+                let (n_removed, last_removed) = self
+                    .raw
+                    .as_ref()
+                    .map(|r| r.removed())
+                    .unwrap_or((0, 0));
+                let removed = match self.filter_device {
+                    Some(want) if last_removed == want => n_removed,
+                    Some(_) => 0,
+                    None => n_removed,
+                };
                 let next = device_state_after_pump(
                     self.device_state,
                     true,
