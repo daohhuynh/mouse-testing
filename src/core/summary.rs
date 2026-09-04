@@ -403,6 +403,32 @@ fn sensor(s: &mut String, app: &App) {
             ),
         );
     }
+    if !st.lod_rungs.is_empty() {
+        any = true;
+        // Every rung, not just the bracket. The ladder is the evidence, and a
+        // bracket quoted without the heights it came from cannot be checked.
+        for rung in &st.lod_rungs {
+            kv(
+                s,
+                "lift-off",
+                &format!("{:.2} mm: {:?}", rung.height_mm, rung.state),
+            );
+        }
+        if let Some(sum) = &st.lod_summary {
+            kv(
+                s,
+                "lift-off distance",
+                &if sum.verdict == crate::core::sensor::Verdict::Inconclusive {
+                    format!("{:?}: {}", sum.verdict, sum.note)
+                } else {
+                    format!(
+                        "{:?}: between {:.2} and {:.2} mm, a {:.2} mm bracket. {}",
+                        sum.verdict, sum.tracked_to_mm, sum.lost_at_mm, sum.bracket_mm, sum.note
+                    )
+                },
+            );
+        }
+    }
     if !any {
         not_measured(s, "sensor tests");
     }

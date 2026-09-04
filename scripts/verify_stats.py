@@ -1,10 +1,25 @@
 """Independent check of the A/B statistics against scipy and brute force."""
-import json, subprocess, sys, itertools, random
+import json, subprocess, sys, itertools, random, os, tempfile, shutil, atexit
 import numpy as np
 from scipy import stats
 
-SCR = "/private/tmp/claude-501/-Users-dao-mouse-testing/ce46051b-b80f-4438-89b7-8e9a46600d4d/scratchpad"
-BIN = "/Users/dao/mouse-testing/target/debug/mouse-testing"
+# Both of these were absolute paths to one machine, one of them into a
+# session-scoped temporary directory that no longer exists. The check is part
+# of how this project claims its statistics are correct, so it has to be
+# runnable by anyone who clones it.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BIN = os.environ.get("MOUSE_TESTING_BIN") or os.path.join(ROOT, "target", "debug", "mouse-testing")
+SCR = tempfile.mkdtemp(prefix="mouse-testing-stats-")
+# Registered rather than called at the end: the script exits through sys.exit
+# on both paths, so a tidy-up line at the bottom would never be reached.
+atexit.register(shutil.rmtree, SCR, True)
+
+if not os.path.exists(BIN):
+    sys.exit(
+        f"no binary at {BIN}\n"
+        "build it first with:  cargo build\n"
+        "or point MOUSE_TESTING_BIN at one."
+    )
 
 rng = random.Random(20240902)
 cases = []
@@ -142,3 +157,4 @@ for k, (e, r, cid) in sorted(worst.items()):
 for f in fails:
     print("FAIL", f)
 sys.exit(1 if fails else 0)
+

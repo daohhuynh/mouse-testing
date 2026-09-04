@@ -982,7 +982,9 @@ verified; the decode itself is verified against real report descriptors read
 off this machine, but not against a real mouse's report stream.
 
 **Statistics.** Verified against scipy and numpy independently rather than
-trusted: 19 cases, worst absolute error 3.6e-15 (`scripts/verify_stats.py`).
+trusted: 19 cases, worst absolute error 3.6e-15 (`scripts/verify_stats.py`,
+run with `cargo build` first and `numpy` and `scipy` installed; it finds the
+binary and makes its own scratch directory, so it needs no arguments).
 Four real bugs were found and fixed in the process, including two that took
 down the interface on an ordinary long run.
 
@@ -1004,13 +1006,25 @@ time constants are recovered within 25%; every common scroll wheel shape has
 its detent size recovered exactly, with 3% reversals and 8% skips each caught
 in 36 of 40 runs and a fast flick never called a skip.
 
+The lift-off detector is checked the same way, and its no-false-alarm
+direction is the awkward one: a clean shuttle is full of genuine silences,
+because the hand stops dead at both ends of every sweep and the device sends
+nothing while it is stopped. Zero of those turns is counted as a crossing.
+Silences that are entered and left at full speed but wander across the stroke,
+which is what a fidgety hand produces, are refused; a disconnection is refused
+rather than measured; a ladder with no control run, or one that contradicts
+itself, is refused. The positive case is held tight rather than loosely: a 6 mm
+blind slot two inches into a four inch sweep is located to within 4 mm with
+under 3 mm of wander, because a loose bound there would pass a detector that
+had merely noticed some silences somewhere.
+
 **Interface.** Layout invariants are enforced by tests that run headlessly,
 including that a numeric readout's width does not change with its value, that a
 grouping box does not resize when the text inside it changes, that every text
 style is monospace, that nothing is rounded, and that colour is used only for
 state.
 
-`cargo test` runs all 95. `cargo build` is clean of warnings on macOS and on
+`cargo test` runs all 118. `cargo build` is clean of warnings on macOS and on
 both Windows targets.
 
 ## Where the measurement refuses to answer
