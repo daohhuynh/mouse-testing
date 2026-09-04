@@ -26,6 +26,11 @@ Two consequences are stated in the interface rather than hidden:
 - The **device** level is per-device. The **system** level is not, on either
   platform: neither OS attributes a physical device to a system input event.
   With two pointing devices moving at once, the system level shows their sum.
+  Windows gets there differently from macOS, and it shows: macOS opens the one
+  device you picked, while Windows delivers every mouse on one stream and the
+  app throws away the reports that are not from yours. The handle it filters on
+  is only valid while the device is attached, so if you unplug the mouse the
+  device level stops rather than quietly falling back to counting everything.
 - The device level is the rate *the OS receives*, not the rate the mouse sends.
   No unprivileged path exists below the OS class driver on either platform.
   Getting lower needs a signed kernel driver, which is a different product.
@@ -500,8 +505,12 @@ matters mostly when you are trying to match two mice or move a setting between
 them.
 
 The app refuses to answer, rather than guess, if your swipe curved, wandered
-off the straight line, was too short, or was fast enough that the sensor might
-have been losing counts. The note says which.
+off the straight line, was too short, was fast enough that the sensor might
+have been losing counts, or had a gap in it where the reports stopped arriving
+partway through. That last one matters most on a flaky cable or a weak wireless
+link: the missing stretch is distance the count never sees, so the CPI reads
+low by exactly the fraction that went missing and nothing else about the swipe
+looks wrong. The note says which.
 
 **drift and jitter** are measured with your hand off the mouse entirely. Drift
 is the pointer wandering off in one direction on its own, which is the
@@ -525,6 +534,13 @@ the mousepad or a book laid on the desk, and let that stop it dead. A hand
 slowing down on its own looks the same as a smoothed mouse, which is why the
 stop has to be sudden.
 
+**maximum tracking speed** finds the speed at which the sensor stops keeping
+up, which is the fast flick that lands somewhere you did not aim. Swipe as fast
+as you can. If you never actually outran the sensor, the app reports the
+fastest speed you reached as a floor rather than a limit, and only calls that a
+pass if you got past 200 inches per second. Below that it says the test was
+inconclusive, which is a comment on your swipe and not on the mouse.
+
 **lift-off distance** finds how high the mouse has to be before the sensor
 stops seeing the pad, which is whether the pointer moves when you pick the
 mouse up to reposition it. **You never lift the mouse for this test.** Instead
@@ -535,9 +551,17 @@ slot at the pad, which is one pile further away than the cards are. Tape it
 down.
 
 Measure twenty cards at once with a ruler and type that in, then how many cards
-are in each pile and how wide the slot is. Twenty because a ruler read to half
-a millimetre is a third of a card, and dividing one reading across twenty is
-the cheapest way to make the height better than your ruler.
+are in each pile and how wide the slot is. Twenty because a card is only about
+a third of a millimetre thick, so a ruler you can read to half a millimetre
+cannot resolve one card at all. Dividing that one reading across twenty is the
+cheapest way to make the height better than your ruler.
+
+You also need the **configured CPI** filled in on the SENSOR screen, because
+the whole test is worked out in millimetres of desk and the sensor only counts
+in counts. If you know what the mouse claims its lift-off distance is, type
+that into **configured LOD** as well, and the app will say whether the bracket
+it measured agrees with the claim. It is optional; leaving it blank costs you
+the comparison and nothing else.
 
 Run the control first, with the cards taken away and 0 entered. It says nothing
 about your mouse: it proves you sweep without stopping and that the link is not
@@ -551,13 +575,6 @@ Then change the number of cards and run it again. Each run answers one
 question, did it track at that height, and the answer is the gap between the
 tallest pile that still tracked and the shortest that did not. There is no
 single number, and the gap can never be narrower than one card.
-
-**maximum tracking speed** finds the speed at which the sensor stops keeping
-up, which is the fast flick that lands somewhere you did not aim. Swipe as fast
-as you can. If you never actually outran the sensor, the app reports the
-fastest speed you reached as a floor rather than a limit, and only calls that a
-pass if you got past 200 inches per second. Below that it says the test was
-inconclusive, which is a comment on your swipe and not on the mouse.
 
 ### CPS: how fast can you click?
 
@@ -671,15 +688,21 @@ it, and puts an older saved recording beside the current one.
 
 Two rules, and both bite:
 
-- **Export before you press stop.** Stopping sets the recording clock back to
-  zero. Every event and every verdict is still written afterwards, but both
-  files will give the length of the session as 0 seconds.
+- **Export before the recording stops.** Stopping sets the recording clock back
+  to zero. Every event and every verdict is still written afterwards, but both
+  files will give the length of the session as 0 seconds. Note that you are not
+  the only one who can stop it: POLLING's "stop when settled" ends the run on
+  its own as soon as the answer has settled, so a run you left to finish itself
+  is already stopped by the time you come back to it.
 - **Starting a new recording wipes the previous one.** The captured events and
-  the POLLING result are gone if you did not export them. On macOS the button
-  history goes with them; on Windows it carries over, so use "clear button
-  history" on CLICKS if you want a fresh count. The SCROLL, SENSOR, CPS and A/B
-  verdicts stay on screen either way, so a summary exported later can mix those
-  older verdicts with a newer recording.
+  the POLLING result are gone if you did not export them. This happens whenever
+  a capture starts, which is more often than pressing start: `F5` or the space
+  bar, the start button on CLICKS, CPS, A/B or SENSOR, and picking a different
+  mouse on DEVICE, which has to rebind the capture and so restarts it. On macOS
+  the button history goes with them; on Windows it carries over, so use "clear
+  button history" on CLICKS if you want a fresh count. The SCROLL, SENSOR, CPS
+  and A/B verdicts stay on screen either way, so a summary exported later can
+  mix those older verdicts with a newer recording.
 
 Remember that `F5` and the space bar toggle the recording from anywhere in the
 app, including this screen. One tap stops it, which is what zeroes the duration
@@ -711,16 +734,21 @@ Three numbers here are worth checking before you trust anything else:
 
 **the battery** is the list of measurements that count as part of this
 configuration. All of them start switched on; click one to leave it out.
-Only the ones switched on are written to the export and compared, so a test you
-deliberately skipped does not come back later looking like a test that went
-missing. Each row says whether it has been measured yet and what it found.
+Only the ones switched on are written to the export and compared, and the ones
+switched off are written down too, as exclusions, so a test you deliberately
+skipped does not come back later looking like a test that went missing. Each
+row says whether it has been measured yet and what it found, or "left out" if
+you have switched it off.
 
 Load an older export and you get **results, loaded against now**: every
 measurement's verdict on both sides, with the figures underneath, and a row
 marked `CHANGED` when the verdict moved. A verdict that did not move can still
 have travelled a long way inside its band, which is what the two figures are
-for. A row where one side says "not measured" is not agreement: one of the two
-configurations was never asked.
+for. A blank side says which kind of blank it is. "not measured" is not
+agreement, it means that configuration was never asked. "left out" means that
+side switched the test off on purpose, so nothing is missing. The exclusions
+are written into both files, which is the only reason the two can be told
+apart at all.
 
 That is the honest way to answer "what did this setting do", and it is
 deliberately not the A/B section. A/B exists because your own technique wanders
@@ -733,9 +761,10 @@ level. Load the `.csv` rather than the `.txt` written beside it; the summary
 file is for reading, and the app will refuse it. What you get back is a timing
 comparison: event counts, rates, dropped reports, motion, interval figures and
 the number of button transitions, which counts every press and every release
-separately. The old CLICKS, SCROLL and SENSOR verdicts are not shown again.
-The app will tell you if the two recordings are of different mice, which is the
-usual reason two sets of numbers refuse to line up.
+separately. The verdicts are compared separately, in "results, loaded against
+now" above it, so this table is only about the raw timing. The app will tell you
+if the two recordings are of different mice, which is the usual reason two sets
+of numbers refuse to line up.
 
 ## Build
 
@@ -1024,16 +1053,19 @@ grouping box does not resize when the text inside it changes, that every text
 style is monospace, that nothing is rounded, and that colour is used only for
 state.
 
-`cargo test` runs all 118. `cargo build` is clean of warnings on macOS and on
+`cargo test` runs all 125. `cargo build` is clean of warnings on macOS and on
 both Windows targets.
 
 ## Where the measurement refuses to answer
 
-Six of the detectors will return **inconclusive** rather than a number when the
-protocol was not met: a snapping stroke too slow or too short, a smoothing
+Nine of the detectors will return **inconclusive** rather than a number when
+the protocol was not met: a snapping stroke too slow or too short, a smoothing
 glide too fast, too few judgeable polling intervals, a free-spinning scroll
-wheel with no detents to count, spam-clicking during a debounce test, and a
-tracking test where the sensor never actually failed.
+wheel with no detents to count, spam-clicking during a debounce test, a
+tracking test where the sensor never actually failed, a drift test that did not
+listen for long enough, a CPI swipe that curved or stalled, and a lift-off run
+with no control, a contradictory ladder or silences that wander around the
+stroke instead of repeating in one place.
 
 Inconclusive deliberately outranks pass, so it cannot be masked. A refusal to
 answer is a better result than an answer computed from a stroke that could not
@@ -1047,7 +1079,7 @@ cannot supply them, rather than analysing zeros.
 
 ## Where intent was guessed
 
-Three places, stated so they can be corrected.
+Four places, stated so they can be corrected.
 
 The **weak-input A/B variant** is described in the requirements as "counting
 total actuations under deliberately weak input". A count needs a denominator to

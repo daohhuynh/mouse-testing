@@ -1,4 +1,4 @@
-//! `abstats` — distribution-free statistics for a blinded, interleaved A/B mouse-firmware trial.
+//! `abstats`: distribution-free statistics for a blinded, interleaved A/B mouse-firmware trial.
 //!
 //! Zero dependencies (core + std only). Everything here is deterministic except the
 //! Monte-Carlo fallback in [`perm_test`], which uses a seeded xorshift PRNG.
@@ -150,7 +150,7 @@ fn sorted_copy(x: &[f64]) -> Vec<f64> {
 }
 
 /// Quantile by **linear interpolation of order statistics**, i.e. Hyndman & Fan
-/// *type 7* — the default of `numpy.quantile` and of R's `quantile()`.
+/// *type 7*, the default of `numpy.quantile` and of R's `quantile()`.
 ///
 /// `h = (n - 1) * p`; result = `x[floor(h)] + (h - floor(h)) * (x[floor(h)+1] - x[floor(h)])`.
 pub fn quantile_type7(x: &[f64], p: f64) -> f64 {
@@ -548,7 +548,7 @@ pub enum ZeroMethod {
 pub enum WsrMethod {
     /// Project default: exact conditional (sign-flip) distribution whenever the number
     /// of ranked observations is <= `EXACT_WSR_MAX_N`, *including* when there are ties
-    /// among |d| — the doubled-rank DP below handles ties exactly. Otherwise asymptotic.
+    /// among |d|; the doubled-rank DP below handles ties exactly. Otherwise asymptotic.
     Auto,
     /// Reproduces `scipy.stats.wilcoxon(method='auto')`: n > 50 -> asymptotic;
     /// else no ties and no zeros -> exact; else n <= 13 -> exhaustive sign-flip

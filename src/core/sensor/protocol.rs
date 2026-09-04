@@ -138,9 +138,9 @@ impl Test {
                  height you measured. Make it narrower.",
                 "Measure twenty cards in one stack with a ruler and enter that figure, then \
                  how many cards are in each pile and how wide the slot is. Twenty at once \
-                 because a ruler read to half a millimetre is a third of a card, and \
-                 dividing that across twenty costs one reading and buys back a factor of \
-                 twenty.",
+                 because a card is only about a third of a millimetre, so a ruler read to \
+                 half a millimetre cannot resolve one; dividing that reading across twenty \
+                 costs one measurement and buys back a factor of twenty.",
                 "Run the control first, with the cards taken away and 0 entered. It says \
                  nothing about the mouse: it proves that you sweep without stopping and \
                  that the link is not dropping reports. Nothing at any height is judged \

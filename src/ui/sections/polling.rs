@@ -79,7 +79,7 @@ fn controls(app: &mut App, ui: &mut egui::Ui) {
             ui,
             Level::Warn,
             &format!(
-                "starting in {remaining:.1} s  \u{2014}  let go of this machine's pointer and \
+                "starting in {remaining:.1} s.  Let go of this machine's pointer and \
                  pick up the mouse under test"
             ),
         );
