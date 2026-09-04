@@ -1008,6 +1008,22 @@ fn lod_result(app: &mut App, ui: &mut egui::Ui) {
                 "mm",
                 Level::Info,
             );
+            // A second, independent estimate of the same width. The two
+            // directions meet opposite edges of the slot, so how far apart
+            // they put it is roughly how wide it is. Shown beside the
+            // speed-and-time estimate because agreement between two figures
+            // that were not computed from each other is the only cheap check
+            // the user has that the rig is the size they think it is.
+            if r.direction_gap_mm.is_finite() {
+                w::readout(
+                    ui,
+                    "one way vs other",
+                    &format!("{:.1}", r.direction_gap_mm),
+                    11,
+                    "mm",
+                    Level::Info,
+                );
+            }
         }
         w::note_indent(
             ui,
@@ -1015,7 +1031,10 @@ fn lod_result(app: &mut App, ui: &mut egui::Ui) {
             "A crossing is a silence entered and left at full speed, in the same direction, \
              in the same place every sweep. A stop is a silence with a hand slowing down on \
              one side of it. The turns at the ends of your sweep are what the difference is \
-             measured against, so they are not wasted time.",
+             measured against, so they are not wasted time. \
+             The last two figures are the slot's width worked out two unrelated ways, from \
+             speed and time, and from how far apart the two directions place it. If they \
+             disagree badly, or with your ruler, treat the run as suspect.",
         );
     });
 

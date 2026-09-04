@@ -181,6 +181,9 @@ pub struct LodResult {
     /// Width of the silence in millimetres, from speed and duration. Reported
     /// for corroboration against the ruler, never used to decide anything.
     pub silence_width_mm: f64,
+    /// How far apart the two directions put the obstacle. Should be about the
+    /// slot's width, since each direction meets a different edge of it.
+    pub direction_gap_mm: f64,
     pub note: &'static str,
 }
 
@@ -193,11 +196,20 @@ impl Default for LodState {
 /// One silence, classified.
 struct Silence {
     crossing: bool,
-    /// Distance into the current half-stroke, in counts.
+    /// Absolute position along the sweep axis, corrected for the travel that
+    /// earlier crossings swallowed. Absolute rather than "distance into the
+    /// stroke", because a slot is fixed to the desk and a stroke's start is
+    /// wherever the hand happened to turn round. Measuring from the turn made
+    /// the clustering test a test of how repeatably the user reverses, which a
+    /// hand does far more loosely than the few millimetres the gate allows.
     at_counts: f64,
     /// +1 or -1 along the sweep axis.
     dir: i32,
     width_counts: f64,
+    /// The silence sits between two strokes, so it is the hand turning round.
+    /// These are the control population and must not be counted against the
+    /// measurement they are there to calibrate.
+    at_turn: bool,
 }
 
 pub fn analyze_lod(reports: &[Report], cfg: &LodConfig) -> LodResult {
@@ -347,15 +359,20 @@ pub fn analyze_lod(reports: &[Report], cfg: &LodConfig) -> LodResult {
 
     let mut silences: Vec<Silence> = Vec::new();
     let mut worst_gap = 0.0f64;
+    let mut drift = 0.0f64;
     for i in 0..reports.len().saturating_sub(1) {
+        let gap = (reports[i + 1].t_ns - reports[i].t_ns) as f64;
+        // Measured before the interior filter, so a dropout at either end of
+        // the capture is still seen. Wheel and button reports carry no motion,
+        // so a real capture's first and last MOVING reports are not its first
+        // and last reports, and a bus dropout can fall outside that span.
+        worst_gap = worst_gap.max(gap);
         if i < first_move || i + 1 > last_move {
             continue;
         }
-        let gap = (reports[i + 1].t_ns - reports[i].t_ns) as f64;
         if gap < g_min {
             continue;
         }
-        worst_gap = worst_gap.max(gap);
         let pre = edge_window(reports, &s, i, cfg, false);
         let post = edge_window(reports, &s, i + 1, cfg, true);
         let (Some(pre), Some(post)) = (pre, post) else {
@@ -369,19 +386,31 @@ pub fn analyze_lod(reports: &[Report], cfg: &LodConfig) -> LodResult {
         // Distance into the current half-stroke, so a fixed obstacle lands at
         // the same figure every sweep whatever the sweep's absolute position.
         let dir = if pre.along >= 0.0 { 1 } else { -1 };
-        let start = stroke_start(&strokes, reports, &s, t0, cfg, i);
-        let at = (s[i] - s[start]).abs();
+        // Dead reckoning loses the slot's width on every crossing, so the
+        // absolute position drifts by that much each time. The amount is known,
+        // which is what makes an absolute position usable at all.
+        let corrected = s[i] + drift;
         silences.push(Silence {
             crossing,
-            at_counts: at,
+            at_counts: corrected,
             dir,
             width_counts: 0.5 * (pre.speed + post.speed) * (gap / NS),
+            at_turn: in_turnaround(&strokes, reports, t0, cfg, i),
         });
+        if crossing {
+            drift += dir as f64 * cfg.slot_mm * counts_per_mm;
+        }
     }
 
     out.n_silences = silences.len();
     out.n_crossings = silences.iter().filter(|x| x.crossing).count();
     out.n_pauses = silences.len() - out.n_crossings;
+    // The turns are silences too, and there is one per pass. Counting them as
+    // suspicious stops meant the run had to lose more passes than it had turns
+    // before it would grade anything, which put Marginal out of reach at every
+    // blinding fraction and told the user to stop pausing when the pauses were
+    // the turns the protocol asks for.
+    let stray_pauses = silences.iter().filter(|x| !x.crossing && !x.at_turn).count();
 
     // A gap far longer than the others is a disconnect, not a crossing, and it
     // must never be turned into a number. This is the fault the whole session
@@ -425,9 +454,30 @@ pub fn analyze_lod(reports: &[Report], cfg: &LodConfig) -> LodResult {
         .filter(|x| x.crossing && x.dir < 0)
         .map(|x| x.at_counts / counts_per_mm)
         .collect();
-    let all: Vec<f64> = fwd.iter().chain(&rev).copied().collect();
-    out.slot_at_mm = util::median(&all);
-    out.slot_spread_mm = util::mad_sigma(&all);
+    // Each direction on its own. Pooling them measured how far off the middle
+    // of the sweep the slot sat, not how repeatably it was crossed, because a
+    // crossing going one way is recorded a slot-width from one going the other.
+    // A slot a centimetre off centre was then refused as "not a fixed obstacle"
+    // however perfectly it repeated.
+    let spread_f = if fwd.is_empty() { 0.0 } else { util::mad_sigma(&fwd) };
+    let spread_r = if rev.is_empty() { 0.0 } else { util::mad_sigma(&rev) };
+    out.slot_spread_mm = spread_f.max(spread_r);
+    let mid_f = if fwd.is_empty() { f64::NAN } else { util::median(&fwd) };
+    let mid_r = if rev.is_empty() { f64::NAN } else { util::median(&rev) };
+    out.slot_at_mm = match (mid_f.is_finite(), mid_r.is_finite()) {
+        (true, true) => 0.5 * (mid_f + mid_r),
+        (true, false) => mid_f,
+        (false, true) => mid_r,
+        _ => 0.0,
+    };
+    // The two directions enter the slot from opposite edges, so their positions
+    // should differ by about its width. Reported rather than gated: it is
+    // corroboration, and the width is already estimated from speed and time.
+    out.direction_gap_mm = if mid_f.is_finite() && mid_r.is_finite() {
+        (mid_r - mid_f).abs()
+    } else {
+        f64::NAN
+    };
     if !clean.is_empty() {
         out.silence_width_mm = util::median(&clean) / counts_per_mm;
     }
@@ -464,9 +514,9 @@ pub fn analyze_lod(reports: &[Report], cfg: &LodConfig) -> LodResult {
                     fixed obstacle on the desk";
         return out;
     }
-    if out.n_pauses > out.n_crossings {
-        out.note = "more of the silences look like stops than like crossings; sweep without \
-                    pausing in the middle";
+    if stray_pauses > out.n_crossings {
+        out.note = "more of the silences look like stops in mid-sweep than like crossings; \
+                    sweep without stopping except at the ends";
         return out;
     }
 
@@ -511,28 +561,34 @@ fn edge_window(
             anchor.saturating_sub(cfg.guard_ns),
         )
     };
+    // Bounded by binary search rather than a scan of every report. This runs
+    // twice per silence, and a silence-heavy eight-thousand-hertz capture put
+    // the whole thing at hundreds of milliseconds on the frame that analysed
+    // it, which is a visible stall in a UI that is otherwise never busy.
+    // Reports are in timestamp order, which is what makes this legitimate.
+    let i0 = reports.partition_point(|r| r.t_ns < lo);
+    let i1 = reports.partition_point(|r| r.t_ns <= hi);
+    let win = &reports[i0..i1];
+    if win.len() < 3 {
+        return None;
+    }
     let mut dx = 0.0f64;
     let mut dy = 0.0f64;
     let mut path = 0.0f64;
-    let mut n = 0usize;
-    let mut i0 = usize::MAX;
-    let mut i1 = 0usize;
-    for (i, r) in reports.iter().enumerate() {
-        if r.t_ns < lo || r.t_ns > hi {
-            continue;
-        }
+    for r in win {
         dx += r.dx as f64;
         dy += r.dy as f64;
         path += r.mag();
-        n += 1;
-        i0 = i0.min(i);
-        i1 = i1.max(i);
     }
-    if n < 3 {
-        return None;
-    }
+    let i1 = i1 - 1;
     let mag = (dx * dx + dy * dy).sqrt();
     if mag <= 0.0 {
+        return None;
+    }
+    // Both bounds saturate to zero for a silence in the first two milliseconds
+    // of a capture, and the infinite speed that produced cleared every edge
+    // gate on no evidence at all.
+    if hi <= lo {
         return None;
     }
     let span = (hi - lo) as f64 / NS;
@@ -544,46 +600,23 @@ fn edge_window(
     })
 }
 
-/// Index of the report where the half-stroke containing `idx` turned round.
+/// Whether a silence sits between two strokes rather than inside one.
 ///
-/// The turn, not the point where the stroke first got up to speed. A stroke
-/// accelerates out of its turn, so its first bins fall below the strong-motion
-/// threshold and are not part of any run; measuring from the first strong bin
-/// would put the obstacle a centimetre closer to the turn than it is. The
-/// clustering does not care, since a constant offset cancels, but the figure is
-/// shown to someone who has a ruler on the desk and can check it.
-fn stroke_start(
+/// The turns are the control population: each is a full stop taken with the
+/// sensor demonstrably on the surface, which is how the detector learns what
+/// this hand's stops look like. They must not also be counted as evidence
+/// against the run.
+fn in_turnaround(
     strokes: &[(i32, usize, usize)],
     reports: &[Report],
-    s: &[f64],
     t0: u64,
     cfg: &LodConfig,
     idx: usize,
-) -> usize {
+) -> bool {
     let bin = ((reports[idx].t_ns - t0) / cfg.bin_ns) as usize;
-    let k = strokes.iter().rposition(|st| st.1 <= bin).unwrap_or(0);
-    if k == 0 {
-        return 0;
-    }
-    // The turn is where the position reaches its extreme, not where the
-    // previous stroke stopped counting as fast. A minimum-jerk stroke coasts a
-    // tenth of its length below the strong-motion threshold on the way in, so
-    // taking the last strong bin puts every crossing that much nearer the turn
-    // than it is.
-    let idx_at = |b: usize| -> usize {
-        let want = t0 + b as u64 * cfg.bin_ns;
-        reports.iter().position(|r| r.t_ns >= want).unwrap_or(0)
-    };
-    let a = idx_at(strokes[k - 1].2);
-    let b = idx_at(strokes[k].1).max(a).min(reports.len() - 1);
-    let prev_dir = strokes[k - 1].0 as f64;
-    let mut best = a;
-    for j in a..=b {
-        if prev_dir * s[j] > prev_dir * s[best] {
-            best = j;
-        }
-    }
-    best.min(idx)
+    // Inside a stroke's own run of strong bins it is not a turn; between two of
+    // them it is.
+    !strokes.iter().any(|st| st.1 <= bin && bin <= st.2)
 }
 
 /// One height that has been run.
@@ -621,16 +654,20 @@ pub fn summarize_lod(rungs: &[LodRung], claimed_mm: Option<f64>) -> LodSummary {
                     silence at any height has nothing to be compared against";
         return out;
     }
+    // Marginal means the sensor let go on some passes, so it bounds the answer
+    // from above exactly as Lost does. Dropping it let a ladder report tracking
+    // to a height above one where the sensor was already failing part of the
+    // time, with the contradiction visible in the table beside it.
+    let lost = rungs
+        .iter()
+        .filter(|r| matches!(r.state, LodState::Lost | LodState::Marginal))
+        .map(|r| r.height_mm)
+        .fold(f64::INFINITY, f64::min);
     let tracked = rungs
         .iter()
         .filter(|r| r.state == LodState::Tracked && r.height_mm > 0.0)
         .map(|r| r.height_mm)
         .fold(f64::NEG_INFINITY, f64::max);
-    let lost = rungs
-        .iter()
-        .filter(|r| r.state == LodState::Lost)
-        .map(|r| r.height_mm)
-        .fold(f64::INFINITY, f64::min);
     if !lost.is_finite() {
         out.note = "no height tested has lost tracking yet; add cards and run it again";
         return out;

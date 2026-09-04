@@ -625,9 +625,25 @@ fn scroll_refuses_a_capture_whose_clock_went_backwards() {
 /// still be a report, and would give the detector information the real failure
 /// never provides.
 fn shuttle(seed: u64, n_half: usize, blind: Option<(f64, f64)>) -> Vec<Report> {
+    shuttle_full(seed, n_half, blind, 0.0, 1)
+}
+
+/// `blind_every` of 1 blinds every pass; 2 blinds every other PAIR of passes,
+/// which is what a height near the threshold looks like. Pairs rather than
+/// single passes because passes alternate direction, and blinding every other
+/// one would blind only one direction, which the detector rightly refuses as a
+/// habit rather than an obstacle.
+fn shuttle_full(
+    seed: u64,
+    n_half: usize,
+    blind: Option<(f64, f64)>,
+    jitter_in: f64,
+    blind_every: usize,
+) -> Vec<Report> {
     let sim = MouseSim { cpi: 1600.0, ..Default::default() };
     let mut r = rng(seed);
-    let traj = ShuttleTraj::new(&mut r, 4.0, 0.5, n_half);
+    let mut traj = ShuttleTraj::new(&mut r, 4.0, 0.5, n_half);
+    traj.end_jitter_in = jitter_in;
     let reports = sim.render(&traj, &mut r);
     let Some((centre_in, width_in)) = blind else {
         return reports;
@@ -635,9 +651,16 @@ fn shuttle(seed: u64, n_half: usize, blind: Option<(f64, f64)>) -> Vec<Report> {
     // Dead-reckon along the sweep axis and drop what falls in the band.
     let mut x = 0.0f64;
     let mut out = Vec::with_capacity(reports.len());
+    let mut pass = 0usize;
+    let mut last_dir = 0i32;
     for rep in reports {
+        let dir = if rep.dx >= 0 { 1 } else { -1 };
+        if dir != last_dir {
+            last_dir = dir;
+            pass += 1;
+        }
         x += rep.dx as f64 / 1600.0;
-        if (x - centre_in).abs() <= width_in / 2.0 {
+        if (pass / 2) % blind_every == 0 && (x - centre_in).abs() <= width_in / 2.0 {
             continue;
         }
         out.push(rep);
@@ -680,14 +703,12 @@ fn lod_a_slot_the_sensor_cannot_see_is_found() {
         "a blind slot was not found: {}",
         out.note
     );
-    // And it should land where the slot actually is. The figure is the LEADING
-    // edge of the silence measured from the turn, so for a 6 mm slot centred
-    // 2 inches into a 4 inch sweep that is 50.8 - 3 = 47.8 mm, from either
-    // direction. Held tight, because a loose bound here would pass a detector
-    // that had merely noticed some silences somewhere.
+    // Two inches into the sweep is 50.8 mm. The two directions meet opposite
+    // edges of the slot and the figure is their midpoint, so it lands on the
+    // centre.
     assert!(
-        (out.slot_at_mm - 47.8).abs() < 4.0,
-        "slot located at {:.1} mm, expected about 47.8",
+        (out.slot_at_mm - 50.8).abs() < 4.0,
+        "slot located at {:.1} mm, expected about 50.8",
         out.slot_at_mm
     );
     assert!(
@@ -794,4 +815,73 @@ fn lod_a_ladder_that_contradicts_itself_is_refused() {
     let s = summarize_lod(&rungs, None);
     assert_eq!(s.verdict, Verdict::Inconclusive);
     assert!(s.note.contains("disagree"), "{}", s.note);
+}
+
+#[test]
+fn lod_finds_a_slot_that_is_not_in_the_middle_of_the_sweep() {
+    // The position assertion above cannot fail for a detector that reports the
+    // midpoint of the sweep whatever the data, and pooling the two directions
+    // made it do exactly that. A slot deliberately off centre pins it: 1.5
+    // inches into a 4 inch sweep is 38.1 mm, a centimetre from the middle.
+    let out = lod::analyze_lod(&shuttle(21, 30, Some((1.5, 0.236))), &lod_cfg());
+    assert_eq!(out.state, lod::LodState::Lost, "off-centre slot: {}", out.note);
+    assert!(
+        (out.slot_at_mm - 38.1).abs() < 4.0,
+        "slot located at {:.1} mm, expected about 38.1",
+        out.slot_at_mm
+    );
+}
+
+#[test]
+fn lod_survives_a_hand_that_does_not_turn_in_the_same_place_twice() {
+    // Measuring a crossing from the turn made the clustering a test of how
+    // repeatably the user reverses. Nobody reverses to a few millimetres over
+    // thirty sweeps, so a correct rig with a genuinely failing sensor was
+    // refused. 5 mm of end wander is modest for a hand.
+    let reports = shuttle_full(22, 30, Some((2.0, 0.236)), 5.0 / 25.4, 1);
+    let out = lod::analyze_lod(&reports, &lod_cfg());
+    assert_eq!(
+        out.state,
+        lod::LodState::Lost,
+        "wandering turns broke the clustering: {} (spread {:.1} mm)",
+        out.note,
+        out.slot_spread_mm
+    );
+}
+
+#[test]
+fn lod_reports_a_height_near_the_threshold_as_marginal() {
+    // Marginal is the state the ladder needs most, since it is what a height
+    // just under the lift-off distance produces. Counting the turnaround
+    // silences as suspicious stops made it unreachable at every blinding
+    // fraction: the run had to lose more passes than it had turns.
+    let reports = shuttle_full(23, 30, Some((2.0, 0.236)), 0.0, 2);
+    let out = lod::analyze_lod(&reports, &lod_cfg());
+    assert_eq!(
+        out.state,
+        lod::LodState::Marginal,
+        "half-blinded run came out {:?}: {} (loss {:.2})",
+        out.state,
+        out.note,
+        out.loss_fraction
+    );
+}
+
+#[test]
+fn lod_marginal_bounds_the_bracket_from_above() {
+    use lod::{summarize_lod, LodRung, LodState};
+    // A height that lost the pad on some passes is evidence the sensor was
+    // already letting go there, so it cannot sit above a height reported as
+    // tracked. Ignoring it let the summary claim tracking to 2.0 mm while the
+    // table beside it showed 1.5 mm as marginal.
+    let rungs = [
+        LodRung { height_mm: 0.0, state: LodState::Tracked },
+        LodRung { height_mm: 1.0, state: LodState::Tracked },
+        LodRung { height_mm: 1.5, state: LodState::Marginal },
+        LodRung { height_mm: 3.0, state: LodState::Lost },
+    ];
+    let s = summarize_lod(&rungs, None);
+    assert_eq!(s.verdict, Verdict::Pass, "{}", s.note);
+    assert_eq!(s.tracked_to_mm, 1.0);
+    assert_eq!(s.lost_at_mm, 1.5, "marginal must bound the bracket");
 }

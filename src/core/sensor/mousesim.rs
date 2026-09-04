@@ -119,6 +119,10 @@ pub struct ShuttleTraj {
     pub n_half: usize,
     pub tremor_in: f64,
     pub tremor_hz: f64,
+    /// Where each turn actually happens, in inches from the nominal end. A hand
+    /// does not reverse in the same place twice, and a fixture that does hides
+    /// every defect in a detector that measures position from the turn.
+    pub end_jitter_in: f64,
     pub ph: [f64; 2],
 }
 
@@ -131,6 +135,7 @@ impl ShuttleTraj {
             n_half,
             tremor_in: 0.012,
             tremor_hz: 10.0,
+            end_jitter_in: 0.0,
             ph: [rng.unit() * std::f64::consts::TAU, rng.unit() * std::f64::consts::TAU],
         }
     }
@@ -146,11 +151,20 @@ impl Traj for ShuttleTraj {
         let local = (t - k as f64 * self.half_s) / self.half_s;
         // Minimum-jerk: still at both ends, so every turn is a genuine stop.
         let f = 10.0 * local.powi(3) - 15.0 * local.powi(4) + 6.0 * local.powi(5);
-        let along = if k % 2 == 0 {
-            f * self.len_in
-        } else {
-            (1.0 - f) * self.len_in
+        // Each end wanders, deterministically per stroke so a run is repeatable.
+        let jit = |i: usize| -> f64 {
+            if self.end_jitter_in == 0.0 {
+                return 0.0;
+            }
+            self.end_jitter_in
+                * ((i as f64 * 12.9898 + self.ph[1]).sin() * 43758.5453).fract().mul_add(2.0, -1.0)
         };
+        let (a, b) = if k % 2 == 0 {
+            (jit(k), self.len_in + jit(k + 1))
+        } else {
+            (self.len_in + jit(k), jit(k + 1))
+        };
+        let along = a + f * (b - a);
         let tr = self.tremor_in
             * (std::f64::consts::TAU * self.tremor_hz * t + self.ph[0]).sin();
         let (c, s) = (self.dir_rad.cos(), self.dir_rad.sin());
