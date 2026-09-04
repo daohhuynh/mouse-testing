@@ -125,7 +125,9 @@ fn battery(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         for item in battery::ITEMS {
             let on = !app.battery_off.contains(item.key);
-            let have = battery::measure(app, item.key);
+            // Only measured when it is going to be shown. Switched off, the
+            // result is discarded, and this runs every frame for every item.
+            let have = if on { battery::measure(app, item.key) } else { None };
             ui.horizontal(|ui| {
                 // Padded to one width so the column beside it lines up. The
                 // rest of the app holds its columns still whatever the value,
@@ -404,8 +406,10 @@ fn results_side_by_side(app: &mut App, ui: &mut egui::Ui) {
         return;
     };
     let before = loaded.meta.results.clone();
+    let before_off = loaded.meta.excluded.clone();
     let after = battery::snapshot(app);
-    let rows = battery::compare(&before, &after);
+    let after_off = battery::excluded(app);
+    let rows = battery::compare(&before, &before_off, &after, &after_off);
 
     w::subheading(ui, "results, loaded against now");
     w::boxed(ui, |ui| {
@@ -429,24 +433,24 @@ fn results_side_by_side(app: &mut App, ui: &mut egui::Ui) {
             ui.horizontal(|ui| {
                 w::fixed_label(ui, &label, 22, L::Info);
                 for side in [&row.before, &row.after] {
-                    match side {
-                        Some(r) => {
-                            let (txt, lvl) = match r.verdict {
-                                Some(v) => (verdict_word(v), w::level_of(v)),
-                                // A measurement with no verdict is not a blank:
-                                // CPS and A/B report numbers, and showing them
-                                // as absent would read as never run.
-                                None => ("recorded", L::Info),
-                            };
-                            w::fixed_value(ui, txt, 14, lvl);
-                        }
+                    let (txt, lvl) = match side {
+                        battery::Side::Recorded(r) => match r.verdict {
+                            Some(v) => (verdict_word(v), w::level_of(v)),
+                            // A measurement with no verdict is not a blank:
+                            // CPS and A/B report numbers, and showing them
+                            // as absent would read as never run.
+                            None => ("recorded", L::Info),
+                        },
+                        // A deliberate exclusion, which is not a gap. This side
+                        // decided the test was not part of the configuration,
+                        // and that is a fact about the experiment.
+                        battery::Side::LeftOut => ("left out", L::Off),
                         // Not "pass", not blank. A side that never measured this
                         // has said nothing, and silence in a comparison reads as
                         // agreement unless it is spelled out.
-                        None => {
-                            w::fixed_value(ui, "not measured", 14, L::Off);
-                        }
-                    }
+                        battery::Side::NotMeasured => ("not measured", L::Off),
+                    };
+                    w::fixed_value(ui, txt, 14, lvl);
                 }
                 if row.changed() {
                     w::fixed_value(ui, "CHANGED", 9, L::Warn);
@@ -454,8 +458,8 @@ fn results_side_by_side(app: &mut App, ui: &mut egui::Ui) {
             });
             // The figures underneath, because a verdict that stayed the same can
             // still have moved a long way inside its band.
-            let b = row.before.as_ref().map(|r| r.headline.as_str()).unwrap_or("-");
-            let a = row.after.as_ref().map(|r| r.headline.as_str()).unwrap_or("-");
+            let b = row.before.record().map(|r| r.headline.as_str()).unwrap_or("-");
+            let a = row.after.record().map(|r| r.headline.as_str()).unwrap_or("-");
             if b != "-" || a != "-" {
                 w::note_indent(ui, 4.0, &format!("loaded: {b}"));
                 w::note_indent(ui, 4.0, &format!("now:    {a}"));
@@ -467,8 +471,10 @@ fn results_side_by_side(app: &mut App, ui: &mut egui::Ui) {
             0.0,
             "A row marked CHANGED is one whose verdict moved. A verdict that did not move \
              can still have travelled inside its band, which is what the two figures under \
-             each row are for. Rows where one side says \"not measured\" are not agreement: \
-             one of the two configurations was never asked.",
+             each row are for. \"not measured\" is not agreement, it means that \
+             configuration was never asked. \"left out\" is different again: that side \
+             decided the test was not part of the configuration, so there is nothing \
+             missing.",
         );
     });
 }

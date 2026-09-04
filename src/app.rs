@@ -222,9 +222,10 @@ pub struct SensorState {
     pub snap: Option<sensor::snap::SnapResult>,
     pub smooth: Option<sensor::smooth::SmoothResult>,
     pub tracking: Option<sensor::tracking::TrackResult>,
-    /// Thickness of TWENTY cards, as typed. Twenty because a ruler read to half
-    /// a millimetre is a third of a card, and dividing one reading across
-    /// twenty is the only cheap way to make the height better than the ruler.
+    /// Thickness of TWENTY cards, as typed. Twenty because a card is only about
+    /// a third of a millimetre, so a ruler read to half a millimetre cannot
+    /// resolve one at all, and dividing that reading across twenty is the only
+    /// cheap way to make the height better than the ruler.
     pub shim_ref_mm: String,
     /// Cards in each pile, changed between runs to walk the ladder.
     pub shims_in_stack: String,
@@ -874,6 +875,7 @@ impl App {
                 .collect(),
             duration_s: self.session.elapsed_s(),
             results: crate::core::battery::snapshot(self),
+            excluded: crate::core::battery::excluded(self),
         }
     }
 
@@ -1037,6 +1039,19 @@ impl App {
             after.events.len(),
             self.data.loaded_skipped
         );
+        // The result lines are stored in a one-line-per-record text format that
+        // trims and replaces separators on purpose, so a headline containing a
+        // pipe or a newline does not come back byte-identical. Comparing the
+        // raw field would report a corrupt file every time one did. What has to
+        // survive is what the format claims to carry, so the check normalises
+        // the written side through the same encoding first.
+        let mut before = before;
+        before.meta.results = before
+            .meta
+            .results
+            .iter()
+            .filter_map(|r| crate::core::battery::Record::decode(&r.encode()))
+            .collect();
         let _ = writeln!(
             s,
             "  metadata       {}",

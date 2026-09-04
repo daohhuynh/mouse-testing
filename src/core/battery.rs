@@ -89,7 +89,10 @@ impl Record {
     pub fn encode(&self) -> String {
         format!(
             "{}|{}|{}",
-            self.key,
+            // The key is sanitised too. It is a constant today, but the check
+            // only held because of that: a key with a separator in it decoded
+            // into a different record, with the verdict silently lost.
+            self.key.replace(['|', '\n', '\r'], " "),
             self.verdict.map(verdict_name).unwrap_or("-"),
             self.headline.replace(['|', '\n', '\r'], " ")
         )
@@ -103,11 +106,19 @@ impl Record {
         if key.is_empty() {
             return None;
         }
-        Some(Record {
-            key,
-            verdict: verdict_from(v),
-            headline,
-        })
+        // "-" means the measurement genuinely has no verdict, which CPS and A/B
+        // do not. Any OTHER unknown word is a verdict from a later build, and
+        // loading it as "no verdict" would show it as one of those, which is a
+        // different claim. Skip the line instead, which is what the loader's
+        // comment already promises.
+        let verdict = match v {
+            "-" => None,
+            other => match verdict_from(other) {
+                Some(x) => Some(x),
+                None => return None,
+            },
+        };
+        Some(Record { key, verdict, headline })
     }
 }
 
@@ -271,6 +282,19 @@ pub fn measure(app: &App, key: &str) -> Option<Record> {
     }
 }
 
+/// The measurements deliberately left out, in ITEMS order.
+///
+/// Recorded alongside the results because otherwise a test the user chose to
+/// skip is byte-for-byte identical in the file to one they never reached, and
+/// those mean opposite things when two runs are compared.
+pub fn excluded(app: &App) -> Vec<String> {
+    ITEMS
+        .iter()
+        .filter(|i| app.battery_off.contains(i.key))
+        .map(|i| i.key.to_string())
+        .collect()
+}
+
 /// Every measurement the user has left in the battery and that has a result.
 ///
 /// A measurement that is switched off contributes nothing, which is the point:
@@ -284,21 +308,61 @@ pub fn snapshot(app: &App) -> Vec<Record> {
         .collect()
 }
 
+/// What one side of a comparison has to say about one measurement.
+///
+/// Three states, not two. "Left out" and "not measured" both leave the column
+/// blank, and treating them as one loses exactly the distinction this module
+/// exists to keep: one side chose not to run this test, the other never got to
+/// it. Only the second is a hole in the evidence.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Side {
+    Recorded(Record),
+    LeftOut,
+    NotMeasured,
+}
+
+impl Side {
+    pub fn record(&self) -> Option<&Record> {
+        match self {
+            Side::Recorded(r) => Some(r),
+            _ => None,
+        }
+    }
+}
+
 /// One row of the comparison.
 pub struct Row {
     pub key: String,
-    pub before: Option<Record>,
-    pub after: Option<Record>,
+    pub before: Side,
+    pub after: Side,
 }
 
 impl Row {
     /// Whether the verdict moved, which is the only thing worth colouring.
     pub fn changed(&self) -> bool {
         match (&self.before, &self.after) {
-            (Some(a), Some(b)) => a.verdict != b.verdict,
+            (Side::Recorded(a), Side::Recorded(b)) => a.verdict != b.verdict,
             _ => false,
         }
     }
+
+    /// Whether either side has anything at all to say, which is what decides
+    /// if the row is worth a line on screen.
+    fn worth_showing(&self) -> bool {
+        self.before != Side::NotMeasured || self.after != Side::NotMeasured
+    }
+}
+
+fn side_for(key: &str, records: &[Record], excluded: &[String]) -> Side {
+    if let Some(r) = records.iter().find(|r| r.key == key) {
+        return Side::Recorded(r.clone());
+    }
+    // Checked second on purpose. A file that somehow carries both is showing a
+    // result that was really taken, and the result is the stronger evidence.
+    if excluded.iter().any(|k| k == key) {
+        return Side::LeftOut;
+    }
+    Side::NotMeasured
 }
 
 /// Pair two snapshots up by key, keeping anything either of them has.
@@ -306,30 +370,38 @@ impl Row {
 /// A measurement one side lacks is kept and marked, never dropped. Dropping it
 /// would turn "we did not measure this after the change" into silence, and
 /// silence reads as agreement.
-pub fn compare(before: &[Record], after: &[Record]) -> Vec<Row> {
+pub fn compare(
+    before: &[Record],
+    before_excluded: &[String],
+    after: &[Record],
+    after_excluded: &[String],
+) -> Vec<Row> {
+    fn push(rows: &mut Vec<Row>, key: &str, b: Side, a: Side) {
+        let row = Row { key: key.to_string(), before: b, after: a };
+        if row.worth_showing() {
+            rows.push(row);
+        }
+    }
     let mut rows: Vec<Row> = Vec::new();
     for item in ITEMS {
-        let b = before.iter().find(|r| r.key == item.key).cloned();
-        let a = after.iter().find(|r| r.key == item.key).cloned();
-        if b.is_some() || a.is_some() {
-            rows.push(Row {
-                key: item.key.to_string(),
-                before: b,
-                after: a,
-            });
-        }
+        let b = side_for(item.key, before, before_excluded);
+        let a = side_for(item.key, after, after_excluded);
+        push(&mut rows, item.key, b, a);
     }
     // Anything from an older or newer version of the app that this build does
     // not know about is still shown, rather than quietly disappearing.
-    for r in before.iter().chain(after) {
-        if ITEMS.iter().any(|i| i.key == r.key) || rows.iter().any(|x| x.key == r.key) {
+    for key in before
+        .iter()
+        .chain(after)
+        .map(|r| r.key.as_str())
+        .chain(before_excluded.iter().chain(after_excluded).map(|k| k.as_str()))
+    {
+        if ITEMS.iter().any(|i| i.key == key) || rows.iter().any(|x| x.key == key) {
             continue;
         }
-        rows.push(Row {
-            key: r.key.clone(),
-            before: before.iter().find(|x| x.key == r.key).cloned(),
-            after: after.iter().find(|x| x.key == r.key).cloned(),
-        });
+        let b = side_for(key, before, before_excluded);
+        let a = side_for(key, after, after_excluded);
+        push(&mut rows, key, b, a);
     }
     rows
 }
@@ -380,13 +452,50 @@ mod tests {
             verdict: Some(Verdict::Fail),
             headline: "c".into(),
         }];
-        let rows = compare(&before, &after);
+        let rows = compare(&before, &[], &after, &[]);
         assert_eq!(rows.len(), 2);
         let polling = rows.iter().find(|r| r.key == "polling").unwrap();
         assert!(polling.changed(), "pass to fail must register as a change");
         let cpi = rows.iter().find(|r| r.key == "sensor.cpi").unwrap();
-        assert!(cpi.after.is_none(), "the after side should be absent");
+        assert_eq!(cpi.after, Side::NotMeasured, "the after side should be absent");
         assert!(!cpi.changed(), "a missing side is not a changed verdict");
+    }
+
+    #[test]
+    fn a_test_left_out_does_not_look_like_a_test_that_went_missing() {
+        // The whole reason exclusions are written down. Both sides are blank in
+        // the file; only the recorded decision tells them apart, and they mean
+        // opposite things: a chosen shape of experiment against lost evidence.
+        let before = vec![Record {
+            key: "polling".into(),
+            verdict: Some(Verdict::Pass),
+            headline: "a".into(),
+        }];
+        let rows = compare(&before, &["sensor.lod".into()], &[], &[]);
+        let lod = rows.iter().find(|r| r.key == "sensor.lod").unwrap();
+        assert_eq!(lod.before, Side::LeftOut);
+        assert_eq!(lod.after, Side::NotMeasured);
+        let polling = rows.iter().find(|r| r.key == "polling").unwrap();
+        assert_eq!(polling.after, Side::NotMeasured);
+        // And a test neither side ran and neither side excluded stays off the
+        // list entirely, or the comparison is mostly empty rows.
+        assert!(rows.iter().all(|r| r.key != "scroll.tilt"));
+    }
+
+    #[test]
+    fn an_exclusion_for_a_key_this_build_does_not_know_still_appears() {
+        let rows = compare(&[], &["sensor.future".into()], &[], &[]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].before, Side::LeftOut);
+    }
+
+    #[test]
+    fn a_verdict_word_from_a_later_build_is_skipped_rather_than_shown_as_none() {
+        // Decoding it to None would put it on screen as "recorded", which is
+        // what CPS and A/B look like, so a real verdict would read as a test
+        // that does not make judgements.
+        assert!(Record::decode("polling|superb|1000 Hz").is_none());
+        assert_eq!(Record::decode("cps|-|7.4 CPS").unwrap().verdict, None);
     }
 
     #[test]
@@ -397,7 +506,7 @@ mod tests {
             verdict: Some(Verdict::Pass),
             headline: "x".into(),
         }];
-        let rows = compare(&before, &[]);
+        let rows = compare(&before, &[], &[], &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].key, "sensor.future");
     }

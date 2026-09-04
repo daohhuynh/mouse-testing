@@ -96,6 +96,8 @@ pub struct Meta {
     /// Recording them is what lets two configurations be compared rather than
     /// just two recordings.
     pub results: Vec<crate::core::battery::Record>,
+    /// Measurements deliberately left out of the battery, by key.
+    pub excluded: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -138,6 +140,9 @@ impl SessionLog {
         }
         for r in &m.results {
             let _ = writeln!(s, "# result: {}", escape(&r.encode()));
+        }
+        for k in &m.excluded {
+            let _ = writeln!(s, "# excluded: {}", escape(k));
         }
         s.push_str("# edge is 1 for press, 0 for release, and empty for motion rows\n");
         s.push_str(HEADER);
@@ -208,6 +213,7 @@ impl SessionLog {
                     "clock_cost_ns" => m.clock_cost_ns = v.parse().unwrap_or(0.0),
                     "duration_s" => m.duration_s = v.parse().unwrap_or(0.0),
                     "warning" => m.warnings.push(v.into()),
+                    "excluded" => m.excluded.push(v.into()),
                     "result" => {
                         // A line this build cannot parse is skipped rather than
                         // failing the load: an export from a later version must
@@ -345,6 +351,7 @@ mod tests {
                 claimed_cpi: "1600".into(),
                 warnings: vec!["running under a hypervisor".into()],
                 duration_s: 12.5,
+                excluded: vec!["sensor.lod".into()],
                 results: vec![
                     crate::core::battery::Record {
                         key: "polling".into(),

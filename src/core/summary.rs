@@ -111,6 +111,8 @@ pub fn render(app: &App, meta: &Meta) -> String {
     );
     let _ = writeln!(s);
 
+    battery(&mut s, app);
+
     polling(&mut s, app);
     clicks(&mut s, app);
     cps(&mut s, app);
@@ -118,6 +120,35 @@ pub fn render(app: &App, meta: &Meta) -> String {
     sensor(&mut s, app);
     scroll(&mut s, app);
     s
+}
+
+/// Which measurements the user said were part of this configuration.
+///
+/// The sections below print everything that was measured, which is the right
+/// thing for a record. But a reader cannot tell from them which tests the user
+/// considered part of the change they were investigating, and the battery panel
+/// promises exclusions reach the export. They reach the CSV as their own lines;
+/// this is where they reach the readable file.
+fn battery(s: &mut String, app: &App) {
+    use crate::core::battery;
+    let off = battery::excluded(app);
+    section(s, "BATTERY");
+    if off.is_empty() {
+        kv(s, "left out", "nothing; every measurement counts as part of this configuration");
+    } else {
+        // Named rather than counted. "3 left out" tells a reader that evidence
+        // is missing without telling them which, which is worse than silence.
+        for k in &off {
+            kv(s, "left out", battery::label_for(k));
+        }
+        kv(
+            s,
+            "note",
+            "these were excluded on purpose. Any figures for them below describe this \
+             session, not the configuration being compared.",
+        );
+    }
+    let _ = writeln!(s);
 }
 
 fn section(s: &mut String, title: &str) {
